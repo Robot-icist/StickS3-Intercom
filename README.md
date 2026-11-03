@@ -36,7 +36,14 @@ feedback, but the audio layer does not need to switch ports.
 
 ## Build and flash
 
-From this directory:
+Clone this repository with its shared-library submodule:
+
+```sh
+git clone --recurse-submodules https://github.com/Robot-icist/StickS3-Intercom.git
+```
+
+If it was cloned without submodules, run `git submodule update --init
+--recursive` from the repository directory. Then, from this directory:
 
 ```powershell
 C:\Users\Gille\.platformio\penv\Scripts\pio.exe run

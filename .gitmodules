@@ -1,0 +1,4 @@
+[submodule "lib/IntercomShared"]
+	path = lib/IntercomShared
+	url = https://github.com/Robot-icist/IntercomShared.git
+	branch = main
