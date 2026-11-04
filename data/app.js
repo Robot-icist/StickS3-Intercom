@@ -1,14 +1,6 @@
 // Intercom Web Client
-function loadWebPeerName() {
-  const storageKey = 'intercom-web-peer-name';
-  try {
-    const savedName = localStorage.getItem(storageKey);
-    if (/^WebClient-[A-F0-9]{5}$/.test(savedName || '')) return savedName;
-  } catch (e) {
-    console.warn('Could not read the web peer identity from local storage:', e);
-  }
-
-  const randomBytes = new Uint8Array(3);
+function createWebPeerIdentity() {
+  const randomBytes = new Uint8Array(6);
   if (window.crypto && window.crypto.getRandomValues) {
     window.crypto.getRandomValues(randomBytes);
   } else {
@@ -16,19 +8,17 @@ function loadWebPeerName() {
       randomBytes[i] = Math.floor(Math.random() * 256);
     }
   }
-  const suffix = Array.from(randomBytes, byte =>
-    byte.toString(16).padStart(2, '0')).join('').toUpperCase().slice(0, 5);
-  const name = 'WebClient-' + suffix;
-  try {
-    localStorage.setItem(storageKey, name);
-  } catch (e) {
-    console.warn('Could not save the web peer identity to local storage:', e);
-  }
-  return name;
+  randomBytes[0] = (randomBytes[0] & 0xFE) | 0x02;
+  return Array.from(randomBytes, byte =>
+    byte.toString(16).padStart(2, '0')).join(':').toUpperCase();
 }
 
+const webPeerIdentity = createWebPeerIdentity();
+const webPeerName = 'Web-' + webPeerIdentity.replace(/:/g, '').slice(-10);
+
 const CONFIG = {
-  webPeerName: loadWebPeerName(),
+  webPeerName,
+  webPeerIdentity,
   wsUrl: (window.location.protocol === 'https:' ? 'wss://' : 'ws://') +
     window.location.host + '/ws',
   reconnectDelay: 2000,
@@ -59,6 +49,7 @@ let helloTimer = null;
 let audioContext = null;
 let micStream = null;
 let micSource = null;
+let micGainNode = null;
 let processor = null;
 let audioCaptureStarting = false;
 let micStatusText = '';
@@ -105,7 +96,8 @@ const talkBtn = document.getElementById('talk-btn');
 const clipBtn = document.getElementById('clip-btn');
 const muteBtn = document.getElementById('mute-btn');
 const volumeSlider = document.getElementById('volume');
-const modeSelect = document.getElementById('mode');
+const micGainValueEl = document.getElementById('mic-gain-value');
+const modeToggleEl = document.getElementById('mode-toggle');
 const logEl = document.getElementById('log');
 const peerListEl = document.getElementById('peer-list');
 const peerItemsEl = document.getElementById('peer-items');
@@ -219,9 +211,16 @@ function updateStatus(state) {
 
 function samePeer(peer, candidate) {
   if (Boolean(peer.webPeer) !== Boolean(candidate.webPeer)) return false;
+  if (peer.webPeer) {
+    if (peer.identityMac && candidate.identityMac) {
+      return peer.identityMac.toUpperCase() === candidate.identityMac.toUpperCase();
+    }
+    return peer.id === candidate.id ||
+      (peer.name && candidate.name && peer.name === candidate.name);
+  }
   return peer.id === candidate.id ||
     (peer.name && candidate.name && peer.name === candidate.name) ||
-    (!peer.webPeer && peer.mac && candidate.mac &&
+    (peer.mac && candidate.mac &&
       peer.mac.toUpperCase() === candidate.mac.toUpperCase());
 }
 
@@ -255,7 +254,11 @@ function normalizePeers(list) {
 }
 
 function sendHello() {
-  sendPacket(JSON.stringify({ cmd: 'hello', name: CONFIG.webPeerName }));
+  sendPacket(JSON.stringify({
+    cmd: 'hello',
+    name: CONFIG.webPeerName,
+    identityMac: CONFIG.webPeerIdentity
+  }));
 }
 
 function sendAudioTarget() {
@@ -264,6 +267,7 @@ function sendAudioTarget() {
     cmd: 'target',
     id: peer ? peer.id : 'all',
     addr: peer ? peer.mac || '' : '',
+    identityMac: peer ? peer.identityMac || '' : '',
     port: peer ? Number(peer.port || 0) : 0,
     viaWifi: peer ? Boolean(peer.viaWifi) : false,
     webPeer: peer ? Boolean(peer.webPeer) : false
@@ -324,6 +328,7 @@ function sendSpyCommand(cmd, peer) {
     action: cmd,
     addr: peer.mac,
     port: Number(peer.port || 0),
+    identityMac: peer.identityMac || '',
     viaWifi: Boolean(peer.viaWifi),
     webPeer: Boolean(peer.webPeer)
   }));
@@ -390,6 +395,10 @@ async function startAudioCapture(userInitiated) {
       micSource.disconnect();
       micSource = null;
     }
+    if (micGainNode) {
+      micGainNode.disconnect();
+      micGainNode = null;
+    }
     if (micStream) {
       micStream.getTracks().forEach(track => track.stop());
     }
@@ -431,11 +440,14 @@ async function startAudioCapture(userInitiated) {
       };
     });
     micSource = audioContext.createMediaStreamSource(micStream);
+    micGainNode = audioContext.createGain();
+    micGainNode.gain.value = Number(volumeSlider.value) / 100;
     processor = audioContext.createScriptProcessor(512, 1, 1);
     processor.onaudioprocess = (e) => {
       collectAudioFrames(e.inputBuffer.getChannelData(0));
     };
-    micSource.connect(processor);
+    micSource.connect(micGainNode);
+    micGainNode.connect(processor);
     processor.connect(audioContext.destination);
     if (audioContext.state === 'suspended') {
       try {
@@ -745,7 +757,11 @@ function handleTextMessage(data) {
     } else if (msg.type === 'peer_list') {
       // Full peer list update
       const previousSelection = selectedPeer;
-      peers = normalizePeers(Array.isArray(msg.peers) ? msg.peers : []);
+      peers = normalizePeers(Array.isArray(msg.peers) ? msg.peers : [])
+        .filter(peer => !peer.webPeer ||
+          (peer.identityMac
+            ? peer.identityMac.toUpperCase() !== CONFIG.webPeerIdentity
+            : peer.name !== CONFIG.webPeerName));
       if (selectedPeer) {
         selectedPeer = peers.find(peer => samePeer(peer, previousSelection)) || null;
       }
@@ -906,6 +922,11 @@ function handleSpyResponse(msg) {
 
 function updateUIForMode() {
   const isSpyMode = currentMode === 'spy';
+  modeToggleEl.querySelectorAll('button[data-mode]').forEach(button => {
+    const active = button.dataset.mode === currentMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
   
   // Show/hide controls based on mode
   talkBtn.style.display = isSpyMode ? 'none' : 'flex';
@@ -1044,11 +1065,23 @@ muteBtn.addEventListener('click', () => {
   updateTxStatus(true);
 });
 
-modeSelect.addEventListener('change', (e) => {
-  currentMode = e.target.value;
+modeToggleEl.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-mode]');
+  if (!button || !modeToggleEl.contains(button)) return;
+  currentMode = button.dataset.mode;
   stopSpy(); // Stop any active spy when changing mode
   updateUIForMode();
   log('Mode: ' + currentMode);
+});
+
+volumeSlider.addEventListener('input', () => {
+  const gain = Number(volumeSlider.value) / 100;
+  if (micGainNode) micGainNode.gain.setTargetAtTime(
+    gain,
+    audioContext.currentTime,
+    0.015
+  );
+  micGainValueEl.textContent = volumeSlider.value + '%';
 });
 
 spyLiveBtn.addEventListener('click', () => {
