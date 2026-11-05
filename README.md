@@ -344,6 +344,23 @@ creates a windowed onedir bundle at `dist\StickS3Companion`. Launch it with:
 .\dist\StickS3Companion\StickS3Companion.exe
 ```
 
+The same operations are available in the PlatformIO Tasks view for either
+environment, or from the repository root. For example:
+
+```powershell
+pio run -e sticks3_ble_hid -t companion_build_windows
+pio run -e sticks3_ble_hid -t companion_run
+```
+
+| Task | Operation |
+| --- | --- |
+| `companion_build_windows` | Build the packaged Windows app |
+| `companion_run` | Launch the packaged executable from `dist` |
+| `companion_run_source` | Launch the desktop app from the project Python environment |
+| `companion_tests` | Run the companion Python test suite |
+
+Build the executable before using `companion_run`.
+
 The dashboard starts listening automatically and shows connection and
 transcription status. Select **Configure actions** to add, edit, or remove
 allow-listed commands. Each action has a spoken name, executable, arguments
