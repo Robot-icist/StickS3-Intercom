@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import struct
+import subprocess
 import sys
 import wave
 from dataclasses import dataclass
@@ -90,6 +91,19 @@ class Receiver:
         self.mode = mode
         print(f"Receiving {mode} audio -> {path}")
 
+    def _flush(self) -> None:
+        """Push buffered frames out so the transcriber can follow live audio.
+
+        wave.Wave_write wraps a buffered file, so without this a live stream
+        would sit in an 8 KB buffer and partial transcription would lag by up
+        to half a second.
+        """
+        handle = getattr(self.audio_file, "_file", None)
+        try:
+            handle.flush()
+        except (AttributeError, OSError):
+            pass
+
     def on_notification(self, _characteristic: object, data: bytearray) -> None:
         if len(data) < HEADER_SIZE:
             print(f"Ignoring short packet ({len(data)} bytes).")
@@ -121,6 +135,7 @@ class Receiver:
 
         try:
             self.audio_file.writeframesraw(decode_frame(payload))
+            self._flush()
         except ValueError as error:
             print(f"Ignoring invalid ADPCM frame: {error}")
 
@@ -491,6 +506,51 @@ async def run(args: argparse.Namespace) -> None:
     raise RuntimeError(message)
 
 
+def start_transcriber(
+    args: argparse.Namespace,
+) -> "subprocess.Popen[bytes] | None":
+    """Launch live_transcriber.py on the same output folder.
+
+    The transcriber is a separate process so that model inference never
+    blocks the BLE event loop; it picks up both live streams and clips as
+    soon as the receiver closes each WAV file.
+    """
+    script = Path(__file__).resolve().with_name("live_transcriber.py")
+    if not script.is_file():
+        print(f"Transcriber not found next to the receiver: {script}",
+              file=sys.stderr)
+        return None
+    command = [
+        sys.executable,
+        "-u",
+        str(script),
+        "--watch",
+        str(args.output),
+        "--method",
+        args.transcribe_method,
+        "--exit-with",
+        str(os.getpid()),
+        *args.transcribe_arg,
+    ]
+    print("Starting transcriber: " + " ".join(command))
+    try:
+        return subprocess.Popen(command)
+    except OSError as error:
+        print(f"Could not start the transcriber: {error}", file=sys.stderr)
+        return None
+
+
+def stop_transcriber(process: "subprocess.Popen[bytes] | None") -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -532,7 +592,35 @@ def main() -> None:
         action="store_true",
         help="list paired BLE devices (Windows) and exit",
     )
+    parser.add_argument(
+        "--transcribe",
+        action="store_true",
+        help=(
+            "also start live_transcriber.py, which transcribes each finished "
+            "live stream or clip and pastes the text into the focused input"
+        ),
+    )
+    parser.add_argument(
+        "--transcribe-method",
+        choices=("paste", "type", "none"),
+        default="paste",
+        help="how the transcriber delivers text (default: paste)",
+    )
+    parser.add_argument(
+        "--transcribe-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help=(
+            "extra live_transcriber.py argument, repeatable; write options "
+            "with an equals sign, for example --transcribe-arg=--modes "
+            "--transcribe-arg=live"
+        ),
+    )
     args = parser.parse_args()
+    transcriber = None
+    if args.transcribe and not args.list:
+        transcriber = start_transcriber(args)
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:
@@ -540,6 +628,8 @@ def main() -> None:
     except (RuntimeError, BleakError) as error:
         print(f"\n{error}", file=sys.stderr)
         raise SystemExit(1)
+    finally:
+        stop_transcriber(transcriber)
 
 
 if __name__ == "__main__":

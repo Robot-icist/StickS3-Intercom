@@ -5,20 +5,36 @@ The script polls a folder for finished WAV files, runs each one through
 NVIDIA Parakeet TDT (via onnx-asr, ONNX Runtime, CPU) and then pastes the
 transcript into whatever text field currently has the caret.
 
+Both capture modes of the receiver are handled:
+
+* ``stickS3_0001_live.wav`` - audio streamed while the microphone is open;
+  the firmware sends an end marker when the stream stops, the receiver
+  closes the file, and the whole session is transcribed at once.
+* ``stickS3_0001_clip.wav`` - audio recorded on the StickS3 and replayed at
+  1x real time; it is transcribed when the clip transfer completes.
+
 Run the BLE receiver in another terminal to produce the files:
 
     .\\.venv\\Scripts\\python.exe companion\\ble_mic_receiver.py
     .\\.venv\\Scripts\\python.exe companion\\live_transcriber.py
 
-Then focus the text field you want to dictate into, record a clip on the
-StickS3, and the transcript appears at the caret a moment after the clip
-ends.
+Or let the receiver start this script for you:
+
+    .\\.venv\\Scripts\\python.exe companion\\ble_mic_receiver.py --transcribe
+
+Then focus the text field you want to dictate into, record on the StickS3,
+and the transcript appears at the caret a moment after the capture ends.
+Use --modes live or --modes clip to dictate only one of the two.
+
+Add --partial-live to transcribe a live stream while it is still open and
+rewrite the field in place every couple of seconds; the final pass after the
+end marker replaces the preview with the authoritative transcript.
 
 Notes
 -----
-* A WAV file is only picked up once it is complete. The receiver writes the
-  RIFF header sizes when it closes the file, so an in-progress recording
-  reports zero frames and is skipped until the next poll.
+* A WAV file is only picked up once it is complete. The receiver uses Python's
+  ``wave`` writer, which only patches the real RIFF sizes when it closes the
+  file, so an in-progress recording is skipped until the next poll.
 * onnx-asr resamples the 8 kHz StickS3 audio to the 16 kHz the model wants
   and only needs numpy + onnxruntime (no PyTorch, no FFmpeg).
 * The transcript is copied to the clipboard before Ctrl+V is sent, so the
@@ -29,7 +45,9 @@ from __future__ import annotations
 
 import argparse
 import array
+import os
 import queue
+import struct
 import sys
 import threading
 import time
@@ -59,6 +77,7 @@ if sys.platform == "win32":
     _INPUT_KEYBOARD = 1
     _KEYEVENTF_KEYUP = 0x0002
     _KEYEVENTF_UNICODE = 0x0004
+    _VK_BACK = 0x08
     _VK_CONTROL = 0x11
     _VK_V = 0x56
     _VK_RETURN = 0x0D
@@ -251,6 +270,19 @@ if sys.platform == "win32":
             if batch:
                 self._send(*batch)
 
+        def backspace(self, count: int) -> None:
+            if count <= 0:
+                return
+            batch: list[_Input] = []
+            for _ in range(count):
+                batch.append(self._key(_VK_BACK))
+                batch.append(self._key(_VK_BACK, keyup=True))
+                if len(batch) >= 64:
+                    self._send(*batch)
+                    batch.clear()
+            if batch:
+                self._send(*batch)
+
     def _make_injector() -> "_WindowsInjector":
         return _WindowsInjector()
 
@@ -279,6 +311,19 @@ elif sys.platform == "darwin":
                     "-e",
                     'tell application "System Events" to keystroke "%s"'
                     % escaped,
+                ],
+                check=True,
+            )
+
+        def backspace(self, count: int) -> None:
+            if count <= 0:
+                return
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'tell application "System Events" to repeat %d times\n'
+                    "key code 51\nend repeat" % count,
                 ],
                 check=True,
             )
@@ -334,6 +379,23 @@ else:
                     "No key injection tool found; install ydotool or xdotool."
                 )
 
+        def backspace(self, count: int) -> None:
+            if count <= 0:
+                return
+            if shutil.which("ydotool"):
+                command = ["ydotool", "key", "backspace"]
+                for _ in range(count):
+                    subprocess.run(command, check=True)
+            elif shutil.which("xdotool"):
+                subprocess.run(
+                    ["xdotool", "key", "--repeat", str(count), "BackSpace"],
+                    check=True,
+                )
+            else:
+                raise InjectionError(
+                    "No key injection tool found; install ydotool or xdotool."
+                )
+
     def _make_injector() -> "_LinuxInjector":
         return _LinuxInjector()
 
@@ -355,43 +417,101 @@ class NotReadyError(RuntimeError):
 
 
 def inspect_wav(path: Path) -> ClipInfo:
-    """Return duration and peak level, or raise if the file is incomplete.
-
-    ``ble_mic_receiver.py`` (like Python's ``wave`` module in general) writes
-    the real chunk sizes only when it closes the file, so a WAV that is still
-    being recorded reports zero frames.
-    """
-    try:
-        with wave.open(str(path), "rb") as wav:
-            channels = max(wav.getnchannels(), 1)
-            width = max(wav.getsampwidth(), 1)
-            sample_rate = max(wav.getframerate(), 1)
-            declared = wav.getnframes()
-            if declared <= 0:
-                raise NotReadyError("WAV header not finalized")
-            data = wav.readframes(declared)
-    except NotReadyError:
-        raise
-    except (wave.Error, EOFError) as error:
-        raise NotReadyError(str(error)) from error
-
-    frames = len(data) // (width * channels)
-    if frames <= 0:
+    """Return duration and peak level, or raise if the file is incomplete."""
+    audio = read_open_wav(path)
+    if not audio.finalized:
+        raise NotReadyError("the file is still being written")
+    if audio.duration <= 0:
         raise NotReadyError("no audio frames yet")
 
     peak: Optional[int] = None
-    if width == 2:
+    if audio.width == 2 and audio.pcm:
         samples = array.array("h")
-        samples.frombytes(data[: frames * channels * 2])
+        samples.frombytes(audio.pcm[: (len(audio.pcm) // 2) * 2])
         if sys.byteorder == "big":
             samples.byteswap()
         peak = max(max(samples), -min(samples))
     return ClipInfo(
-        duration=frames / sample_rate,
+        duration=audio.duration,
         peak=peak,
-        channels=channels,
-        sample_rate=sample_rate,
+        channels=audio.channels,
+        sample_rate=audio.sample_rate,
     )
+
+
+@dataclass
+class OpenWav:
+    pcm: bytes
+    sample_rate: int
+    duration: float
+    finalized: bool
+    width: int
+    channels: int
+
+
+def read_open_wav(path: Path) -> OpenWav:
+    """Read a WAV that may still be growing.
+
+    ``wave`` fills in the RIFF sizes in two steps: the first write puts that
+    chunk's length in the header, and ``close`` patches the real totals. A
+    file therefore counts as finalized when the header sizes account for the
+    whole file. Until then this walks the chunks and returns everything
+    written so far, which is what partial live transcription needs.
+    """
+    with path.open("rb") as handle:
+        header = handle.read(12)
+        if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+            raise NotReadyError("not a RIFF/WAVE file yet")
+        file_size = os.fstat(handle.fileno()).st_size
+        sample_rate = 0
+        channels = 0
+        width = 0
+        while True:
+            position = handle.tell()
+            chunk = handle.read(8)
+            if len(chunk) < 8:
+                raise NotReadyError("no data chunk yet")
+            chunk_id, chunk_size = struct.unpack("<4sI", chunk)
+            if chunk_id == b"fmt ":
+                fmt = handle.read(chunk_size)
+                if len(fmt) < 16:
+                    raise NotReadyError("incomplete fmt chunk")
+                (
+                    _format,
+                    channels,
+                    sample_rate,
+                    _byte_rate,
+                    block_align,
+                    bits,
+                ) = struct.unpack_from("<HHIIHH", fmt)
+                if sample_rate <= 0 or channels <= 0:
+                    raise NotReadyError("unsupported audio layout")
+                width = max(1, block_align // channels if block_align
+                            else bits // 8)
+                if chunk_size & 1:
+                    handle.read(1)
+            elif chunk_id == b"data":
+                if sample_rate <= 0 or width <= 0:
+                    raise NotReadyError("incomplete fmt chunk")
+                # The header size is stale while the writer is open (it holds
+                # the first chunk's length until close), so read to EOF and
+                # let the header only decide whether the file is complete.
+                pcm = handle.read()
+                finalized = bool(chunk_size) and (
+                    position + 8 + chunk_size + (chunk_size & 1) == file_size
+                )
+                frame_size = max(1, width * channels)
+                frames = len(pcm) // frame_size
+                return OpenWav(
+                    pcm=pcm[: frames * frame_size],
+                    sample_rate=sample_rate,
+                    duration=frames / sample_rate,
+                    finalized=finalized,
+                    width=width,
+                    channels=channels,
+                )
+            else:
+                handle.seek(chunk_size + (chunk_size & 1), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +591,28 @@ class Transcriber:
             return " ".join(part for part in parts if part)
         return self.model.recognize(path).strip()
 
+    def transcribe_audio(self, pcm: bytes, sample_rate: int) -> str:
+        """Recognize little-endian 16-bit mono PCM straight from memory."""
+        import numpy
+
+        waveform = numpy.frombuffer(pcm, dtype="<i2").astype(numpy.float32)
+        waveform /= 32768.0
+        if len(waveform) / sample_rate > LONG_AUDIO_SECONDS:
+            # Parakeet handles ~30 s in one pass; long streams go through
+            # Silero VAD so partial updates keep working for long dictation.
+            if self._vad is None:
+                self._vad = self._onnx_asr.load_vad("silero")
+            parts = [
+                segment.text.strip()
+                for segment in self.model.with_vad(self._vad).recognize(
+                    waveform, sample_rate=sample_rate
+                )
+            ]
+            return " ".join(part for part in parts if part)
+        return self.model.recognize(
+            waveform, sample_rate=sample_rate
+        ).strip()
+
 
 # ---------------------------------------------------------------------------
 # Folder watching
@@ -497,12 +639,14 @@ class Watcher:
         poll: float,
         include_existing: bool,
         pattern: str,
+        modes: str,
     ) -> None:
         self.folder = folder
         self.settle = settle
         self.poll = poll
         self.include_existing = include_existing
         self.pattern = pattern
+        self.modes = modes
         self.pending: dict[str, PendingFile] = {}
         self.done: dict[str, tuple[int, int]] = {}
         self._stopped = threading.Event()
@@ -524,6 +668,12 @@ class Watcher:
                 continue
             if self.pattern and self.pattern.lower() not in entry.name.lower():
                 continue
+            # The receiver names files stickS3_0001_live.wav (streamed while
+            # talking) and stickS3_0001_clip.wav (recorded, then sent).
+            if self.modes != "all" and not entry.stem.casefold().endswith(
+                f"_{self.modes}"
+            ):
+                continue
             try:
                 stat = entry.stat()
             except OSError:
@@ -544,6 +694,23 @@ class Watcher:
 
     def stop(self) -> None:
         self._stopped.set()
+
+    def is_stopped(self) -> bool:
+        return self._stopped.is_set()
+
+    def live_candidates(self) -> list[Path]:
+        """Return live recordings that are not transcribed yet."""
+        if self.modes == "clip":
+            return []
+        signatures = self._signatures()
+        paths: list[Path] = []
+        for name, signature in signatures.items():
+            if self.done.get(name) == signature:
+                continue
+            if not Path(name).stem.casefold().endswith("_live"):
+                continue
+            paths.append(self.folder / name)
+        return paths
 
     def poll_once(self) -> list[Job]:
         now = time.monotonic()
@@ -598,6 +765,42 @@ class Watcher:
 
 def format_duration(seconds: float) -> str:
     return f"{seconds:.1f}s"
+
+
+def parent_alive(pid: int) -> bool:
+    """Return False once the process that started us has exited."""
+    if sys.platform == "win32":
+        import ctypes
+
+        wait_timeout = 0x102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(
+                ctypes.c_void_p(handle), 0
+            ) == wait_timeout
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_with_parent(pid: int, watcher: "Watcher") -> None:
+    while not watcher.is_stopped():
+        if not parent_alive(pid):
+            print("The process that started the transcriber exited; stopping.",
+                  flush=True)
+            watcher.stop()
+            return
+        time.sleep(1.0)
 
 
 def main() -> None:
@@ -674,6 +877,37 @@ def main() -> None:
         help="only watch files containing this text (default: stickS3)",
     )
     parser.add_argument(
+        "--modes",
+        choices=("all", "live", "clip"),
+        default="all",
+        help=(
+            "which capture modes to transcribe: live is the streamed "
+            "push-to-talk audio, clip is the recorded-then-sent audio "
+            "(default: all)"
+        ),
+    )
+    parser.add_argument(
+        "--partial-live",
+        action="store_true",
+        help=(
+            "transcribe live streams while they are still open and rewrite "
+            "the field in place every --partial-interval seconds (default: "
+            "wait until the stream stops)"
+        ),
+    )
+    parser.add_argument(
+        "--partial-interval",
+        type=float,
+        default=1.5,
+        help="seconds between partial live updates (default: 1.5)",
+    )
+    parser.add_argument(
+        "--partial-min-audio",
+        type=float,
+        default=0.6,
+        help="seconds of new audio needed before a partial update (default: 0.6)",
+    )
+    parser.add_argument(
         "--include-existing",
         action="store_true",
         help="also transcribe files already in the folder at startup",
@@ -694,6 +928,15 @@ def main() -> None:
         action="store_true",
         help="beep after pasting",
     )
+    parser.add_argument(
+        "--exit-with",
+        type=int,
+        metavar="PID",
+        help=(
+            "exit when this process exits; the receiver passes its own pid "
+            "so a crashed receiver cannot leave a transcriber behind"
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -708,6 +951,18 @@ def main() -> None:
             parser.error(
                 f"cannot use {args.watch} as the watch folder: {error}"
             )
+
+    # Snapshot the folder before the model loads so that a recording finished
+    # during the first few seconds is still seen as new.
+    watcher = Watcher(
+        folder=args.watch,
+        settle=args.settle,
+        poll=args.poll,
+        include_existing=args.include_existing,
+        pattern=args.pattern,
+        modes=args.modes,
+    )
+    watcher.prime()
 
     try:
         transcriber = Transcriber(
@@ -736,29 +991,38 @@ def main() -> None:
             print(f"Text injection unavailable ({error}); printing only.",
                   file=sys.stderr)
 
-    watcher = Watcher(
-        folder=args.watch,
-        settle=args.settle,
-        poll=args.poll,
-        include_existing=args.include_existing,
-        pattern=args.pattern,
-    )
-    watcher.prime()
-
     jobs: queue.Queue[Optional[Job]] = queue.Queue()
     stop = threading.Event()
+    partials_enabled = args.partial_live and args.modes != "clip"
+    live_state: dict[str, LiveState] = {}
 
     def worker() -> None:
         while True:
-            job = jobs.get()
+            try:
+                job = jobs.get(timeout=0.2)
+            except queue.Empty:
+                if partials_enabled and not stop.is_set():
+                    scan_partials(
+                        watcher, transcriber, injector, args, live_state
+                    )
+                continue
             if job is None:
                 return
             if stop.is_set():
                 continue
-            process_job(job, transcriber, injector, args)
+            previous = live_state.pop(job.path.name, LiveState()).text
+            process_job(job, transcriber, injector, args, previous=previous)
 
     thread = threading.Thread(target=worker, name="transcriber", daemon=True)
     thread.start()
+
+    if args.exit_with:
+        threading.Thread(
+            target=stop_with_parent,
+            args=(args.exit_with, watcher),
+            name="parent-watch",
+            daemon=True,
+        ).start()
 
     print(
         "Ready. Focus the text field you want to dictate into, then record "
@@ -766,6 +1030,9 @@ def main() -> None:
     )
     if args.method == "paste":
         print("The transcript is pasted at the caret with Ctrl+V.")
+    if partials_enabled:
+        print(f"Live streams update the field every "
+              f"{args.partial_interval:g}s and are rewritten once at the end.")
     try:
         watcher.run(jobs.put)
     except KeyboardInterrupt:
@@ -777,7 +1044,127 @@ def main() -> None:
         thread.join(timeout=5)
 
 
-def process_job(job: Job, transcriber: Transcriber, injector, args) -> None:
+@dataclass
+class LiveState:
+    text: str = ""
+    duration: float = 0.0
+    checked_at: float = 0.0
+    cost: float = 0.0
+
+
+def utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def deliver(
+    text: str,
+    previous: str,
+    injector,
+    args,
+    *,
+    trailing_space: bool,
+) -> Optional[bool]:
+    """Send text to the focused field, replacing an older partial result.
+
+    Partial live updates grow the same transcript in place. The longest common
+    prefix with what was already typed is kept, the rest is deleted with
+    backspaces, and only the new tail is pasted, so the field never shows two
+    copies of the same sentence. Without partials ``previous`` is empty and
+    this is a plain paste.
+
+    Returns None when there is nothing to send, True when keystrokes were
+    sent, and False when sending failed.
+    """
+    if injector is None:
+        return None
+    target = text + (" " if trailing_space else "")
+    common = os.path.commonprefix([previous, target])
+    removals = utf16_length(previous) - utf16_length(common)
+    tail = target[len(common):]
+    if removals <= 0 and not tail:
+        return None
+    try:
+        if removals > 0:
+            injector.backspace(removals)
+        if tail:
+            if args.method == "type":
+                injector.type_text(tail)
+            else:
+                injector.paste(tail)
+    except Exception as error:  # noqa: BLE001 - clipboard/keystroke failure
+        print(f"  could not send the text: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def scan_partials(
+    watcher: Watcher,
+    transcriber: Transcriber,
+    injector,
+    args,
+    state: dict[str, LiveState],
+) -> None:
+    """Transcribe open live streams and update the field in place."""
+    now = time.monotonic()
+    for path in watcher.live_candidates():
+        name = path.name
+        entry = state.setdefault(name, LiveState())
+        if now - entry.checked_at < args.partial_interval:
+            continue
+        entry.checked_at = now
+        try:
+            audio = read_open_wav(path)
+        except (NotReadyError, OSError):
+            continue
+        if audio.finalized or audio.width != 2 or audio.channels != 1:
+            continue
+        if audio.sample_rate not in (8000, 16000):
+            continue
+        if audio.duration + 0.05 < entry.duration:
+            # The receiver restarted and reused this file name; the previous
+            # text belongs to a different stream.
+            entry = state[name] = LiveState()
+        if audio.duration < args.partial_min_audio:
+            continue
+        # Re-transcribing the whole stream gets slower as it grows, so wait
+        # longer between passes when the previous one was expensive. That
+        # keeps long VAD runs from pinning the CPU.
+        step = max(args.partial_min_audio, entry.cost * 2.0)
+        if audio.duration - entry.duration < step:
+            continue
+
+        started = time.perf_counter()
+        try:
+            text = transcriber.transcribe_audio(audio.pcm, audio.sample_rate)
+        except Exception as error:  # noqa: BLE001 - keep the stream going
+            print(f"[{time.strftime('%H:%M:%S')}] {name}: partial failed: "
+                  f"{error}", file=sys.stderr)
+            continue
+        elapsed = time.perf_counter() - started
+        entry.duration = audio.duration
+        entry.cost = elapsed
+        if not text or text == entry.text:
+            continue
+
+        print(f"[{time.strftime('%H:%M:%S')}] ~{name} "
+              f"({format_duration(audio.duration)}, {elapsed:.2f}s)\n  {text}")
+        if deliver(text, entry.text, injector, args,
+                   trailing_space=False) is not False:
+            entry.text = text
+
+    if len(state) > 32:
+        for name in list(state):
+            if not (watcher.folder / name).exists():
+                del state[name]
+
+
+def process_job(
+    job: Job,
+    transcriber: Transcriber,
+    injector,
+    args,
+    previous: str = "",
+) -> None:
     name = job.path.name
     if job.info.duration < args.min_duration:
         print(f"[{time.strftime('%H:%M:%S')}] {name}: skipped "
@@ -800,6 +1187,10 @@ def process_job(job: Job, transcriber: Transcriber, injector, args) -> None:
     if not text:
         print(f"[{time.strftime('%H:%M:%S')}] {name}: no speech detected "
               f"({elapsed:.2f}s)")
+        if previous and deliver(
+            "", previous, injector, args, trailing_space=False
+        ):
+            print("  -> removed the partial preview")
         return
 
     line = (
@@ -817,20 +1208,15 @@ def process_job(job: Job, transcriber: Transcriber, injector, args) -> None:
         except OSError as error:
             print(f"  could not save text: {error}")
 
-    if injector is None:
-        return
-
-    payload = text + (" " if args.trailing_space else "")
-    try:
-        if args.method == "type":
-            injector.type_text(payload)
-        else:
-            injector.paste(payload)
-    except Exception as error:  # noqa: BLE001 - clipboard/keystroke failure
-        print(f"  could not send the text: {error}", file=sys.stderr)
-        return
-    print(f"  -> {'typed' if args.method == 'type' else 'pasted'} "
-          f"into the focused field")
+    if deliver(
+        text,
+        previous,
+        injector,
+        args,
+        trailing_space=args.trailing_space,
+    ):
+        print(f"  -> {'typed' if args.method == 'type' else 'pasted'} "
+              f"into the focused field")
     if args.beep:
         print("\a", end="", flush=True)
 

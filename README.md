@@ -172,6 +172,37 @@ py -m venv .venv
 .\.venv\Scripts\python.exe companion\ble_mic_receiver.py
 ```
 
+Add `--transcribe` to chain the receiver to the speech-to-text companion
+described in the next section, so one command records and dictates.
+
+### One-line launchers
+
+After installing the dependencies above, each of these is a complete command:
+
+```powershell
+# 1. Receiver only: save live streams and clips as WAV files.
+.\.venv\Scripts\python.exe companion\ble_mic_receiver.py
+
+# 2. Transcriber only: dictate recordings produced by another receiver.
+.\.venv\Scripts\python.exe companion\live_transcriber.py
+
+# 3. Receiver plus transcriber: paste once after each capture finishes.
+.\.venv\Scripts\python.exe companion\ble_mic_receiver.py --transcribe
+
+# 4. Same, plus partial text while you are still talking (see below).
+.\.venv\Scripts\python.exe companion\ble_mic_receiver.py --transcribe --transcribe-arg=--partial-live
+
+# 5. Two terminals for partial live: start the receiver, then this.
+.\.venv\Scripts\python.exe companion\live_transcriber.py --partial-live
+
+# 6. One dictation, English-only model, GPU when available.
+.\.venv\Scripts\python.exe companion\live_transcriber.py --model nemo-parakeet-tdt-0.6b-v2 --device cuda
+```
+
+Focus the input field and leave the caret where the text should go before
+recording. With `--transcribe`, `--transcribe-method type|none` sends keystrokes
+instead of pasting, or only prints to the console.
+
 If the automatic lookup cannot find the controller (for example because its
 Windows name differs), list the paired devices and connect by address:
 
@@ -213,26 +244,77 @@ several times real time without PyTorch, Transformers, or FFmpeg. The StickS3
 stream is 8 kHz, so `onnx-asr` resamples it to the 16 kHz the model expects;
 accuracy is therefore limited by the narrowband microphone, not by the model.
 
-Install the extra dependencies once, then run the receiver in one terminal and
-the transcriber in another:
+Both capture modes of the receiver are handled, because both produce a complete
+WAV in the same folder:
+
+- `stickS3_0001_live.wav` - the streamed push-to-talk audio. The firmware sends
+  an end marker when the stream stops, the receiver closes the file, and the
+  whole live session is transcribed at once. Add `--partial-live` to see text
+  appear while you are still talking (see below); otherwise the transcript
+  appears when the stream ends.
+- `stickS3_0001_clip.wav` - audio recorded on the StickS3 and replayed at 1x
+  real time. It is transcribed once the clip transfer completes.
+
+Install the extra dependencies once, then use one of the
+[one-line launchers](#one-line-launchers) above (`--transcribe` chains the two
+processes):
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r companion\requirements.txt
+```
+
+or run the two processes in separate terminals (the receiver owns the BLE link,
+the transcriber only watches the folder, so either can be restarted alone):
+
+```powershell
 .\.venv\Scripts\python.exe companion\ble_mic_receiver.py
 .\.venv\Scripts\python.exe companion\live_transcriber.py
 ```
 
-Focus the text field you want to dictate into and record on the StickS3. A clip
-is transcribed roughly 0.3 s after the receiver closes the file; the first run
-downloads the model into the Hugging Face cache and loads it in a few seconds,
-later runs are ready almost immediately. The transcript is printed to the
-console, copied to the clipboard, and sent with Ctrl+V via `SendInput`, so the
-text also stays on the clipboard for a second paste.
+With `--transcribe` the receiver starts
+`live_transcriber.py --watch <output> --method <paste|type|none>` as a child
+process, so inference never blocks the BLE event loop, and stops it on exit;
+the child also watches the receiver's pid and exits if the receiver dies, so a
+crash cannot leave a second transcriber behind. Do not combine it with another
+transcriber on the same folder, or every recording is pasted twice.
+`--transcribe-arg=...` forwards extra flags, for example
+`--transcribe-arg=--modes --transcribe-arg=live`.
+
+Focus the text field you want to dictate into and record on the StickS3. A
+capture is transcribed roughly 0.3 s after the receiver closes its file; the
+first run downloads the model into the Hugging Face cache and loads it in a few
+seconds, later runs are ready almost immediately. The transcript is printed to
+the console, copied to the clipboard, and sent with Ctrl+V via `SendInput`, so
+the text also stays on the clipboard for a second paste.
+
+#### Partial live text
+
+`--partial-live` reads the live WAV while the receiver is still writing it and
+recognises the audio so far every `--partial-interval` seconds (default 1.5 s),
+so words appear while the button is still held. The field is updated in place:
+the longest common prefix with the previous result is kept, and only the
+changed tail is replaced with backspaces plus a paste (or keystrokes with
+`--method type`). When the stream ends, the whole session is transcribed once
+more and the field is corrected without duplicating text.
+
+Leave the caret at the end of the partial transcript while talking. Updates
+edit the text at the caret, so moving it or typing in the same field during a
+stream makes the next update overwrite the wrong characters. Only live streams
+are affected; clips and the default behaviour without the flag are unchanged.
+Each update needs at least `--partial-min-audio` seconds of new audio (default
+0.6 s) and passes get less frequent as a stream grows, because every pass
+re-transcribes the session from the start; beyond 28 s that uses Silero VAD.
+Partial text is a preview, and the final pass after the end marker is
+authoritative.
 
 Useful options:
 
-- `--watch PATH` watches another folder; `--pattern TEXT` narrows the file name
-  filter (default `stickS3`).
+- `--partial-live` enables live updates, `--partial-interval SECONDS` changes
+  how often they are attempted (default 1.5), and `--partial-min-audio SECONDS`
+  sets how much new audio is needed (default 0.6).
+- `--modes all|live|clip` picks which capture mode is dictated (default `all`),
+  and `--watch PATH` / `--pattern TEXT` change the folder and file name filter
+  (default `recordings` and `stickS3`).
 - `--model nemo-parakeet-tdt-0.6b-v2` switches to the English-only Parakeet,
   `--quantization fp32` to full precision, and `--device cuda` / `--device
   directml` to a GPU provider when the installed ONNX Runtime supports one.
@@ -243,11 +325,16 @@ Useful options:
   each paste, `--save-text` writes a `.txt` next to each recording, and
   `--beep` signals that the text was sent.
 
-A WAV is only considered finished once it is a complete file: Python's `wave`
-writer (used by the receiver) patches the RIFF sizes on close, so a recording
-that is still in progress reports zero frames and is skipped. The file must
-also stop changing for `--settle` seconds, and clips shorter than
-`--min-duration` or quieter than `--min-peak` are ignored.
+A WAV is only considered finished once its RIFF sizes account for the whole
+file. Python's `wave` writer (used by the receiver) puts the first chunk's
+length in the header and patches the real sizes on close, so a growing live
+file is normally treated as unfinished. The file must also stop changing for
+`--settle` seconds, and clips shorter than `--min-duration` or quieter than
+`--min-peak` are ignored. Partial live scanning bypasses `wave.open` and reads
+the bytes after the data chunk header directly, which is what lets it follow a
+file that is still open. A live session that runs longer than 28 s is split
+with Silero VAD before recognition, and a live file that is cancelled or
+interrupted by a disconnect is still closed and transcribed.
 
 Text injection is platform specific: Windows uses `SendInput` (a normal process
 cannot send keys to an elevated one, so run both at the same integrity level),
