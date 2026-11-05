@@ -57,6 +57,15 @@
       "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
       "description": "Build the Windows companion executable"
     },
+    "ota update": {
+      "command": [
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\companion\\ota_deploy.py"
+      ],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Build firmware and/or LittleFS, then upload over authenticated Wi-Fi OTA",
+      "interactive": true
+    },
     "list bluetooth devices": {
       "command": [
         "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",

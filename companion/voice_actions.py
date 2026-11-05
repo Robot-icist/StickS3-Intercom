@@ -7,9 +7,13 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from interactive_prompts import prompt_choice
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,7 @@ class Action:
     command: tuple[str, ...]
     cwd: Optional[Path]
     description: str
+    interactive: bool = False
 
 
 def load_actions(path: Path) -> dict[str, Action]:
@@ -90,7 +95,12 @@ def load_actions(path: Path) -> dict[str, Action]:
         description = definition.get("description", "")
         if not isinstance(description, str):
             raise ValueError(f"action {name!r} has a non-string description")
-        actions[name.casefold()] = Action(tuple(command), cwd, description)
+        interactive = definition.get("interactive", False)
+        if not isinstance(interactive, bool):
+            raise ValueError(f"action {name!r} has a non-boolean interactive flag")
+        actions[name.casefold()] = Action(
+            tuple(command), cwd, description, interactive
+        )
     return actions
 
 
@@ -118,9 +128,28 @@ class VoiceCommandRouter:
         self.copilot_cwd = copilot_cwd
         self.timeout = timeout
         self.actions = load_actions(actions_path)
+        self._interactive_lock = threading.Lock()
+        self._interactive_process: subprocess.Popen[bytes] | None = None
+        self._interactive_session: Path | None = None
+        self._interactive_pending = False
+
+    def route(self, transcript: str) -> Optional[str]:
+        """Route final speech without blocking transcription on interactive actions."""
+        if self._forward_to_active_prompt(transcript):
+            return None
+
+        intent = parse_intent(transcript)
+        if intent.target == "action" and intent.content:
+            action = self.actions.get(intent.content.casefold())
+            if action is not None and action.interactive:
+                self._start_confirmed_interactive_action(intent.content)
+                return None
+        return self.handle(transcript)
 
     def handle(self, transcript: str) -> Optional[str]:
         """Return dictation text, or route a prefixed command and return None."""
+        if self._forward_to_active_prompt(transcript):
+            return None
         intent = parse_intent(transcript)
         if intent.target == "dictation":
             return intent.content
@@ -141,8 +170,74 @@ class VoiceCommandRouter:
             self._run_action(intent.content)
         return None
 
+    def _forward_to_active_prompt(self, transcript: str) -> bool:
+        with self._interactive_lock:
+            process = self._interactive_process
+            session = self._interactive_session
+            pending = self._interactive_pending
+            active = pending or (
+                process is not None and process.poll() is None
+            )
+            if not active or session is None:
+                return False
+
+            prompt_path = session / "active_prompt.json"
+            try:
+                prompt = json.loads(prompt_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return active
+            except (OSError, json.JSONDecodeError) as error:
+                print(f"Could not read the active companion prompt: {error}",
+                      file=sys.stderr)
+                return True
+
+            if prompt.get("kind") == "choice":
+                try:
+                    with (session / "voice_inbox.jsonl").open(
+                        "a", encoding="utf-8"
+                    ) as voice_inbox:
+                        voice_inbox.write(
+                            json.dumps({"text": transcript}) + "\n"
+                        )
+                except OSError as error:
+                    print(
+                        f"Could not forward speech to the active popup: {error}",
+                        file=sys.stderr,
+                    )
+            return True
+
+    def has_active_prompt(self) -> bool:
+        with self._interactive_lock:
+            process = self._interactive_process
+            session = self._interactive_session
+            return bool(
+                session is not None
+                and (
+                    self._interactive_pending
+                    or (
+                        process is not None
+                        and process.poll() is None
+                    )
+                )
+            )
+
     @staticmethod
-    def _confirm(target: str, content: str) -> bool:
+    def _confirm(
+        target: str,
+        content: str,
+        *,
+        session_dir: Path | None = None,
+    ) -> bool:
+        if session_dir is not None:
+            selection = prompt_choice(
+                "Confirm voice action",
+                f"{target}\n\n{content}",
+                ("No, cancel", "Yes, run action"),
+                voice_aliases=("no", "yes"),
+                session_dir=session_dir,
+            )
+            return selection == 1
+
         print(f"\nVoice command target: {target}\n  {content}")
         try:
             answer = input("Confirm? [y/N] ").strip().casefold()
@@ -317,7 +412,12 @@ class VoiceCommandRouter:
         if result.returncode:
             print(f"GitHub Copilot CLI exited with status {result.returncode}.")
 
-    def _run_action(self, name: str) -> None:
+    def _run_action(
+        self,
+        name: str,
+        *,
+        session_dir: Path | None = None,
+    ) -> None:
         action = self.actions.get(name.casefold())
         if action is None:
             available = ", ".join(sorted(self.actions)) or "(none configured)"
@@ -327,7 +427,11 @@ class VoiceCommandRouter:
         target = f"action {name!r}: {display}\n  command: {list(action.command)!r}"
         if action.cwd is not None:
             target += f"\n  working directory: {action.cwd}"
-        if not self._confirm(target, "Run this configured action?"):
+        if not self._confirm(
+            target,
+            "Run this configured action?",
+            session_dir=session_dir,
+        ):
             return
         executable = shutil.which(action.command[0])
         if executable is None:
@@ -339,6 +443,14 @@ class VoiceCommandRouter:
             raise RuntimeError(f"Action working directory does not exist: {action.cwd}")
         print(f"Running action {name!r}...")
         try:
+            if action.interactive:
+                self._start_interactive_action(
+                    command,
+                    cwd=action.cwd,
+                    name=name,
+                    session=session_dir,
+                )
+                return
             result = subprocess.run(
                 command,
                 cwd=action.cwd,
@@ -357,3 +469,134 @@ class VoiceCommandRouter:
             print(result.stderr.strip(), file=sys.stderr)
         if result.returncode:
             print(f"Action exited with status {result.returncode}.")
+
+    def _start_interactive_action(
+        self,
+        command: tuple[str, ...],
+        *,
+        cwd: Optional[Path],
+        name: str,
+        session: Path | None = None,
+    ) -> None:
+        owns_session = session is None
+        with self._interactive_lock:
+            if (
+                self._interactive_pending
+                or (
+                    self._interactive_process is not None
+                    and self._interactive_process.poll() is None
+                )
+            ):
+                if session is None or session != self._interactive_session:
+                    raise RuntimeError("Another interactive action is still running.")
+
+            if session is None:
+                session = Path(tempfile.mkdtemp(prefix="sticks3-interaction-"))
+            environment = os.environ.copy()
+            environment["STICKS3_INTERACTION_DIR"] = str(session)
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=environment,
+                )
+            except OSError:
+                if owns_session:
+                    shutil.rmtree(session)
+                raise
+            self._interactive_process = process
+            self._interactive_session = session
+            self._interactive_pending = False
+
+        threading.Thread(
+            target=self._wait_for_interactive_action,
+            args=(process, session, name),
+            name="interactive-action",
+            daemon=True,
+        ).start()
+
+    def _start_confirmed_interactive_action(self, name: str) -> None:
+        session = Path(tempfile.mkdtemp(prefix="sticks3-interaction-"))
+        with self._interactive_lock:
+            if (
+                self._interactive_pending
+                or (
+                    self._interactive_process is not None
+                    and self._interactive_process.poll() is None
+                )
+            ):
+                shutil.rmtree(session)
+                raise RuntimeError("Another interactive action is still running.")
+            self._interactive_session = session
+            self._interactive_process = None
+            self._interactive_pending = True
+
+        worker = threading.Thread(
+            target=self._run_confirmed_interactive_action,
+            args=(name, session),
+            name="interactive-action-launch",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except RuntimeError:
+            with self._interactive_lock:
+                self._interactive_session = None
+                self._interactive_pending = False
+            shutil.rmtree(session)
+            raise
+
+    def _run_confirmed_interactive_action(
+        self,
+        name: str,
+        session: Path,
+    ) -> None:
+        try:
+            self._run_action(name, session_dir=session)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"Voice action {name!r} failed: {error}", file=sys.stderr)
+        finally:
+            with self._interactive_lock:
+                cleanup = (
+                    self._interactive_session == session
+                    and self._interactive_pending
+                )
+                if cleanup:
+                    self._interactive_session = None
+                    self._interactive_process = None
+                    self._interactive_pending = False
+            if cleanup:
+                try:
+                    shutil.rmtree(session)
+                except OSError as error:
+                    print(f"Could not clean up action session {session}: {error}",
+                          file=sys.stderr)
+
+    def _wait_for_interactive_action(
+        self,
+        process: subprocess.Popen[bytes],
+        session: Path,
+        name: str,
+    ) -> None:
+        try:
+            return_code = process.wait(timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            print(f"Interactive action {name!r} timed out; stopping it.",
+                  file=sys.stderr)
+            process.terminate()
+            try:
+                return_code = process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return_code = process.wait()
+        print(f"Interactive action {name!r} exited with status {return_code}.")
+        with self._interactive_lock:
+            if self._interactive_process is process:
+                self._interactive_process = None
+                self._interactive_session = None
+                self._interactive_pending = False
+        try:
+            shutil.rmtree(session)
+        except OSError as error:
+            print(f"Could not clean up action session {session}: {error}",
+                  file=sys.stderr)

@@ -23,6 +23,10 @@ struct ControllerViewState {
   uint8_t dpiLevel = 3;
   int8_t batteryLevel = -1;
   bool joystickError = false;
+  char deviceName[32] = {};
+  char ipAddress[16] = {};
+  char mdnsName[40] = {};
+  char otaPassword[64] = {};
   uint8_t pendingBaseRotation = 0;
   float roll = 0.0f;
   float pitch = 0.0f;

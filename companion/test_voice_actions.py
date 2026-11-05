@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from voice_actions import (
     VoiceCommandRouter,
@@ -125,6 +125,161 @@ class VoiceCommandRouterTests(unittest.TestCase):
             ):
                 router.handle("run action: test")
             run.assert_not_called()
+
+    def test_interactive_action_starts_asynchronously_with_voice_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "ota update": {
+                            "command": ["python", "ota_deploy.py"],
+                            "interactive": True,
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with (
+                patch("builtins.input", return_value="yes"),
+                patch("voice_actions.shutil.which", return_value="python.exe"),
+                patch("voice_actions.subprocess.Popen") as popen,
+                patch("voice_actions.threading.Thread") as thread,
+            ):
+                router.handle("run action: ota update")
+
+            self.assertEqual(popen.call_args.args[0], ("python.exe", "ota_deploy.py"))
+            self.assertIn(
+                "STICKS3_INTERACTION_DIR",
+                popen.call_args.kwargs["env"],
+            )
+            self.assertTrue(
+                Path(popen.call_args.kwargs["env"]["STICKS3_INTERACTION_DIR"]).is_dir()
+            )
+            thread.assert_called_once()
+
+    def test_interactive_action_route_opens_voice_aware_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "ota update": {
+                            "command": ["python", "ota_deploy.py"],
+                            "interactive": True,
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with patch("voice_actions.threading.Thread") as thread:
+                result = router.route("run action: ota update")
+
+            self.assertIsNone(result)
+            self.assertTrue(router._interactive_pending)
+            self.assertIsNone(router._interactive_process)
+            thread.assert_called_once()
+            session = router._interactive_session
+            self.assertIsNotNone(session)
+            session.rmdir()
+
+    def test_interactive_confirmation_is_a_popup_choice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            session = Path(temporary)
+            with patch("voice_actions.prompt_choice", return_value=1) as choose:
+                confirmed = VoiceCommandRouter._confirm(
+                    "action 'ota update'",
+                    "Run this configured action?",
+                    session_dir=session,
+                )
+
+            self.assertTrue(confirmed)
+            self.assertEqual(
+                choose.call_args.kwargs["voice_aliases"],
+                ("no", "yes"),
+            )
+            self.assertEqual(choose.call_args.kwargs["session_dir"], session)
+
+    def test_voice_is_forwarded_to_an_active_choice_popup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "missing.json"
+            router = self.make_router(config)
+            session = Path(temporary) / "session"
+            session.mkdir()
+            (session / "active_prompt.json").write_text(
+                json.dumps({"kind": "choice"}),
+                encoding="utf-8",
+            )
+            router._interactive_process = Mock()
+            router._interactive_process.poll.return_value = None
+            router._interactive_session = session
+            self.assertTrue(router.has_active_prompt())
+
+            result = router.handle("StickS3 BLE HID")
+
+            self.assertIsNone(result)
+            messages = [
+                json.loads(line)
+                for line in (session / "voice_inbox.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(messages, [{"text": "StickS3 BLE HID"}])
+
+    def test_voice_is_buffered_while_action_confirmation_popup_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            session = Path(temporary) / "session"
+            session.mkdir()
+            router._interactive_session = session
+            router._interactive_pending = True
+
+            self.assertTrue(router.has_active_prompt())
+            self.assertIsNone(router.route("yes"))
+            self.assertFalse((session / "voice_inbox.jsonl").exists())
+
+            (session / "active_prompt.json").write_text(
+                json.dumps({"kind": "choice"}),
+                encoding="utf-8",
+            )
+            self.assertIsNone(router.route("yes"))
+            messages = [
+                json.loads(line)
+                for line in (session / "voice_inbox.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(messages, [{"text": "yes"}])
+
+    def test_interactive_action_swallows_speech_between_popups(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            session = Path(temporary) / "session"
+            session.mkdir()
+            router._interactive_session = session
+            router._interactive_pending = True
+
+            self.assertIsNone(router.route("please build the firmware"))
+            self.assertFalse((session / "voice_inbox.jsonl").exists())
+    def test_voice_is_not_forwarded_from_a_text_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            session = Path(temporary) / "session"
+            session.mkdir()
+            (session / "active_prompt.json").write_text(
+                json.dumps({"kind": "text"}),
+                encoding="utf-8",
+            )
+            router._interactive_process = Mock()
+            router._interactive_process.poll.return_value = None
+            router._interactive_session = session
+
+            result = router.handle("password is secret")
+
+            self.assertIsNone(result)
+            self.assertFalse((session / "voice_inbox.jsonl").exists())
 
     def test_opencode_uses_selected_session_and_cli_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

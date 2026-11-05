@@ -70,6 +70,31 @@ void drawClippedMarquee(LGFX_Sprite& screen, const char* text, int32_t x,
   screen.clearClipRect();
 }
 
+void drawNetworkIdentity(LGFX_Sprite& screen,
+                         const ControllerViewState& state, uint32_t now) {
+  const char* prefix = "NAME ";
+  const char* value = state.deviceName;
+  const uint32_t phase = now % 19000;
+  if (phase >= 3000 && phase < 6000) {
+      prefix = "IP ";
+      value = state.ipAddress[0] ? state.ipAddress : "WIFI WAIT";
+  } else if (phase >= 6000 && phase < 9000) {
+      prefix = "MDNS ";
+      value = state.mdnsName;
+  } else if (phase >= 9000) {
+      prefix = "OTA ";
+      value = state.otaPassword[0] ? state.otaPassword : "OTA OFF";
+  }
+
+  char identity[80];
+  snprintf(identity, sizeof(identity), "%s%s", prefix,
+           value[0] ? value : "UNKNOWN");
+  screen.setFont(&fonts::Font0);
+  screen.setTextDatum(lgfx::textdatum_t::top_left);
+  drawClippedMarquee(screen, identity, 8, 22, screen.width() - 16, 10,
+                     kColorSecondary, kColorBackground, now);
+}
+
 }  // namespace
 
 bool ControllerUi::begin() {
@@ -132,6 +157,7 @@ void ControllerUi::renderController(const ControllerViewState& state,
   _screen.drawString(connectionStatus,
                      _screen.width() - 8, 12);
   drawBatteryStatus(_screen, state.batteryLevel, 2);
+  drawNetworkIdentity(_screen, state, now);
   _screen.drawFastHLine(8, 34, _screen.width() - 16, kColorBorder);
 
   if (state.micMode) {
@@ -293,6 +319,7 @@ void ControllerUi::renderImuCube(const ControllerViewState& state) {
   _screen.setFont(&fonts::Font0);
   _screen.drawString("ORIENTATION", 8, 8);
   drawBatteryStatus(_screen, state.batteryLevel, 8);
+  drawNetworkIdentity(_screen, state, millis());
   char baseOrientation[32];
   snprintf(baseOrientation, sizeof(baseOrientation), "BASE %u DEG %s",
            static_cast<unsigned>(state.pendingBaseRotation * 90),
@@ -300,14 +327,14 @@ void ControllerUi::renderImuCube(const ControllerViewState& state) {
   _screen.setTextDatum(lgfx::textdatum_t::top_center);
   _screen.setTextColor(state.orientationSaved ? kColorSecondary : kColorWarning,
                        kColorBackground);
-  _screen.drawString(baseOrientation, _screen.width() / 2, 20);
+  _screen.drawString(baseOrientation, _screen.width() / 2, 32);
 
   char orientation[40];
   snprintf(orientation, sizeof(orientation), "R %.0f   P %.0f",
            state.roll * kRadToDeg, state.pitch * kRadToDeg);
   _screen.setTextColor(kColorPrimary, kColorBackground);
-  _screen.drawString(orientation, _screen.width() / 2, 31);
-  _screen.drawRoundRect(8, 42, _screen.width() - 16, 158, 10, kColorBorder);
+  _screen.drawString(orientation, _screen.width() / 2, 43);
+  _screen.drawRoundRect(8, 54, _screen.width() - 16, 146, 10, kColorBorder);
 
   int16_t points[8][2] = {};
   for (uint8_t i = 0; i < 8; ++i) {

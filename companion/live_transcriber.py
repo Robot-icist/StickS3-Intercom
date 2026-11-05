@@ -1130,6 +1130,10 @@ def main() -> None:
             "'Copilot: ...', or 'run action: ...'; every command requires "
             "terminal approval."
         )
+        print(
+            "Interactive actions run in the background. While a choice popup "
+            "is open, speech highlights an option; gesture or Enter confirms."
+        )
     try:
         watcher.run(jobs.put)
     except KeyboardInterrupt:
@@ -1244,6 +1248,9 @@ def scan_partials(
         if not text or text == entry.text:
             continue
 
+        if voice_router is not None and voice_router.has_active_prompt():
+            continue
+
         if voice_router is not None:
             intent = parse_intent(text)
             if intent.target != "dictation":
@@ -1323,7 +1330,7 @@ def process_job(
             ):
                 print("  -> removed the partial dictation preview")
         try:
-            text = voice_router.handle(text)
+            text = voice_router.route(text)
         except RuntimeError as error:
             print(f"  voice command failed: {error}", file=sys.stderr)
             return

@@ -13,6 +13,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <new>
+#include <utility>
 
 #include "BleMicAudio.h"
 
@@ -20,6 +22,10 @@ namespace controller {
 namespace {
 
 constexpr uint8_t kModifierLeftControl = 0x01;
+constexpr char kOtaServiceUuid[] =
+    "e5d20001-3c9b-4f6a-9b2d-2a7f4510a002";
+constexpr char kOtaCredentialsUuid[] =
+    "e5d20002-3c9b-4f6a-9b2d-2a7f4510a002";
 
 uint8_t kKeyboardReportMap[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
@@ -171,11 +177,34 @@ class ServerDiagnostics final : public BLEServerCallbacks {
   }
 };
 
+class OtaCredentialsCallbacks final : public BLECharacteristicCallbacks {
+ public:
+  explicit OtaCredentialsCallbacks(
+      BleHidDevice::OtaCredentialsProvider* provider)
+      : _provider(provider) {}
+
+  void onRead(BLECharacteristic* characteristic) override {
+    char credentials[80] = {};
+    if (_provider == nullptr || !*_provider ||
+        !(*_provider)(credentials, sizeof(credentials))) {
+      characteristic->setValue("WAIT_WIFI");
+      return;
+    }
+    characteristic->setValue(credentials);
+    memset(credentials, 0, sizeof(credentials));
+  }
+
+ private:
+  BleHidDevice::OtaCredentialsProvider* _provider;
+};
+
 ServerDiagnostics kServerDiagnostics;
 
 }  // namespace
 
-bool BleHidDevice::begin(BleMicAudio& micAudio) {
+bool BleHidDevice::begin(BleMicAudio& micAudio,
+                         OtaCredentialsProvider otaCredentialsProvider) {
+  _otaCredentials = std::move(otaCredentialsProvider);
   BLEDevice::init("StickS3 BLE Controller");
   BLEDevice::setMTU(185);
 
@@ -249,6 +278,30 @@ bool BleHidDevice::begin(BleMicAudio& micAudio) {
     _errorMessage = "BLE MIC INIT FAILED";
     return false;
   }
+
+  BLEService* otaService = _server->createService(BLEUUID(kOtaServiceUuid), 4);
+  if (otaService == nullptr) {
+    Serial.println("[controller] BLE OTA service creation failed");
+    _errorMessage = "BLE OTA INIT FAILED";
+    return false;
+  }
+  BLECharacteristic* otaCredentials = otaService->createCharacteristic(
+      BLEUUID(kOtaCredentialsUuid), BLECharacteristic::PROPERTY_READ);
+  if (otaCredentials == nullptr) {
+    Serial.println("[controller] BLE OTA credential creation failed");
+    _errorMessage = "BLE OTA INIT FAILED";
+    return false;
+  }
+  otaCredentials->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED);
+  OtaCredentialsCallbacks* otaCallbacks =
+      new (std::nothrow) OtaCredentialsCallbacks(&_otaCredentials);
+  if (otaCallbacks == nullptr) {
+    Serial.println("[controller] BLE OTA callback allocation failed");
+    _errorMessage = "BLE OTA INIT FAILED";
+    return false;
+  }
+  otaCredentials->setCallbacks(otaCallbacks);
+  otaService->start();
 
   const uint8_t idleKeyboardReport[8] = {};
   const uint8_t idleMouseReport[4] = {};

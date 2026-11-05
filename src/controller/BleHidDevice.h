@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include <functional>
+
 class BLECharacteristic;
 class BLEHIDDevice;
 class BLEServer;
@@ -12,7 +14,9 @@ class BleMicAudio;
 
 class BleHidDevice {
  public:
-  bool begin(BleMicAudio& micAudio);
+  using OtaCredentialsProvider = std::function<bool(char*, size_t)>;
+
+  bool begin(BleMicAudio& micAudio, OtaCredentialsProvider otaCredentials);
   bool updateConnection(uint32_t now);
   bool connected() const { return _connected; }
   bool reportsReady() const;
@@ -29,6 +33,7 @@ class BleHidDevice {
   BLEHIDDevice* _hid = nullptr;
   BLECharacteristic* _keyboardInputReport = nullptr;
   BLECharacteristic* _mouseInputReport = nullptr;
+  OtaCredentialsProvider _otaCredentials;
   const char* _errorMessage = "BLE INIT FAILED";
   bool _connected = false;
   uint32_t _lastConnectionCheckAt = 0;

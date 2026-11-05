@@ -52,6 +52,107 @@ C:\Users\Gille\.platformio\penv\Scripts\pio.exe run -t upload
 
 Then build and flash `..\AtomS3R-Intercom` the same way.
 
+## Wi-Fi OTA updates
+
+The intercom and standalone BLE HID environments support authenticated
+firmware OTA; the intercom also supports LittleFS image updates. AtomS3R
+intercom firmware uses the same OTA service from `IntercomShared`. OTA needs
+Wi-Fi and does not replace the first USB flash: install an OTA-enabled build
+over USB once on each board before using this workflow. The BLE HID firmware
+does not currently use LittleFS. Its partition can accept an update, but the
+current LittleFS image comes from the project data directory and has no
+controller runtime effect.
+
+The intercom joins Wi-Fi using its existing setup and saved credentials. BLE
+HID reuses the same `intercom` NVS Wi-Fi settings. If it has no saved network
+or cannot connect, it starts a protected `STICK-XXXX-Setup` access point; use
+the OTA password printed to serial on first boot, connect to that AP, and open
+`http://192.168.4.1/` to save the Wi-Fi network. The board restarts after
+saving. Keep the per-device OTA password printed to serial on its first
+OTA-enabled boot; it is generated once and stored in NVS as `ota_pass`, and
+the same password is used by intercom and BLE HID firmware on that board.
+The StickS3 hostname is `STICK-XXXX`; the AtomS3R hostname is `ATOM-XXXX`.
+
+Run the interactive deployer from this repository:
+
+```powershell
+.\.venv\Scripts\python.exe .\companion\ota_deploy.py
+```
+
+Start with StickS3 BLE HID firmware running; it exposes the encrypted,
+read-only BLE characteristic used to hand the deployer a short-lived OTA
+password. Select `sticks3_ble_hid` or `sticks3_intercom` as the build target.
+The deployer only offers StickS3 targets because the AtomS3R intercom does not
+provide this BLE credential service. The environment chooser defaults to
+`sticks3_ble_hid`; the selected environment determines the build and matching
+image path. Firmware only is the default; choose LittleFS/both when needed.
+For both images, LittleFS is uploaded first and the deployer reconnects over
+BLE for fresh credentials after the device restarts before uploading firmware.
+It never exposes the permanent NVS password. If multiple compatible devices
+are found, a device-selection popup appears. The device must be connected to
+Wi-Fi and the computer and board must be on a network that permits ESP32 OTA
+traffic.
+
+If you install StickS3 intercom firmware, BLE credential handoff is no longer
+available afterward; use the intercom's Wi-Fi OTA workflow for later updates.
+
+Pair the device with the computer when prompted; Windows can reuse an existing
+BLE HID pairing even when the StickS3 is already connected as a keyboard and
+mouse. The firmware uses Just Works BLE pairing, which encrypts the link but
+does not verify a peer with a passkey, so run OTA only in a trusted area.
+Left/right gestures or arrow keys change popup selections; front/Enter accepts,
+back/Escape cancels. While a choice popup is open, say an option to highlight
+it, then use the StickS3 to accept it. Never expose the OTA service or setup
+access point to an untrusted network.
+
+The companion's exact-name action list can launch the deployer interactively
+after its normal confirmation prompt. Copy or merge the `ota update` entry
+from [companion/actions.example.json](./companion/actions.example.json) into
+`%LOCALAPPDATA%\StickS3Intercom\actions.json`, then say “Run action: ota
+update”. Edit the Python, project, and PlatformIO paths in the action for your
+checkout. An OTA-enabled device can still be recovered or initially flashed
+over USB with PlatformIO.
+
+The PlatformIO **Project Tasks** tree provides one-click OTA targets under
+**Custom** in both the StickS3 and AtomS3R projects:
+
+- `OTA: BLE HID firmware (default)` builds and uploads the recommended
+  StickS3 BLE HID firmware without chooser prompts.
+- `OTA: choose environment and image` opens the environment and image prompts,
+  with StickS3 BLE HID preselected.
+- `OTA: firmware`, `OTA: LittleFS`, or `OTA: firmware and LittleFS` preselects
+  the image type and prompts for the environment. BLE discovery chooses a
+  unique matching device automatically, or shows a device picker when needed.
+
+Open the PlatformIO sidebar, expand **Project Tasks**, then expand the active
+environment and **Custom**. Use an **OTA:** task, not the standard **Build** or
+**Upload** task: the standard Build task only compiles and the standard Upload
+task uses USB. The default firmware task builds StickS3 BLE HID, requests
+temporary credentials over BLE, and runs the Wi-Fi OTA transfer without a
+chooser. The fixed image tasks use the PlatformIO environment under which
+they appear. For example, from a terminal:
+
+```powershell
+pio run -e sticks3_ble_hid -t ota_deploy
+```
+
+Use `OTA: choose environment and image` (or `-t ota_choose`) when you want to
+select a different StickS3 firmware or image interactively:
+
+```powershell
+pio run -e sticks3_ble_hid -t ota_choose
+```
+
+The task output reports BLE discovery, device/IP selection, uploader
+authentication, and transfer progress; it returns a failure status if any
+stage fails. `pio run -t upload` remains a serial/USB upload; no OTA protocol
+is set as the default.
+
+Both the intercom and BLE HID screens rotate their header through the device
+name, current IP address, mDNS name, and OTA password. The password is shown
+on-device only, so anyone who can view the display can read it. Its display
+phase lasts about 10 seconds to make the full password easier to read.
+
 ## Controls
 
 | Action | Result |
@@ -63,7 +164,8 @@ Then build and flash `..\AtomS3R-Intercom` the same way.
 
 ## UI
 
-- Header: device name and peer name (or `SEARCH`).
+- Header: rotating device/network/OTA details alongside the peer name (or
+  `SEARCH`).
 - Large state: `READY`, `RX`, `TALK`, `REC`, `SEND`, `ERROR`.
 - Two VU bars: microphone and received audio.
 - Mode box, battery, RSSI and a short hint.
@@ -83,8 +185,8 @@ Then build and flash `..\AtomS3R-Intercom` the same way.
 The separate `sticks3_ble_hid` PlatformIO environment builds a standalone BLE
 keyboard/mouse prototype for the StickS3 and M5Stack Unit Joystick2
 (I2C address `0x63`, external I2C pins SDA 9/SCL 10). It does not modify or
-start the intercom application or the shared library, and it does not start
-Wi-Fi or ESP-NOW.
+start the intercom application or the shared library. It starts Wi-Fi only
+for protected setup and authenticated OTA; it does not start ESP-NOW.
 
 Build and flash it with:
 
@@ -95,17 +197,12 @@ C:\Users\Gille\.platformio\penv\Scripts\pio.exe run -e sticks3_ble_hid -t upload
 
 Pair the computer with **StickS3 BLE Controller**. The default mouse mode maps
 the joystick to pointer movement, a click to left-click, a double-click to
-right-click, BtnA/BtnB to Ctrl+C/Ctrl+V, and IMU gestures to approval-menu
-navigation: front/back selects the first option and presses Enter; left/right
-selects the last option and presses Enter. In OpenCode's default permission
-prompt this means approve once / reject, without choosing the broader
-"always allow" option. Keep the relevant agent prompt focused before gesturing.
-The same Home/Enter and End/Enter sequences are sent regardless of which
-harness is focused. They work as accept/reject only when that harness's focused
-prompt is a selectable menu whose first option accepts and last option
-rejects; the controller cannot detect which application is active. Verify a
-prompt before relying on it. The separate voice-command confirmation in the
-companion console still requires typing `y` or `yes`.
+right-click, BtnA/BtnB to Ctrl+C/Ctrl+V, and IMU gestures to menu navigation:
+left/right moves to the previous/next option, front accepts (Enter), and back
+cancels (Escape). These gestures work in the companion's interactive popups
+and in other applications with keyboard-selectable menus. The controller
+cannot detect which application is active; keep the intended prompt focused
+and verify its current selection before gesturing.
 If the controller was paired before a firmware update, remove/forget the old
 Bluetooth device on the computer and pair it again so the host refreshes the
 cached HID report descriptor.
@@ -236,6 +333,12 @@ configuration with:
 .\dist\StickS3Companion\StickS3Companion.exe --voice-commands --transcribe-arg=--partial-live
 ```
 
+Double-clicking or launching `StickS3Companion.exe` with no arguments also
+starts transcription automatically and loads Parakeet before BLE discovery.
+Use `--receiver-only` when you only want WAV recordings without loading ASR.
+The model is downloaded on first use to the current Windows user's Hugging
+Face cache and reused on later launches.
+
 Keep the console visible: it displays transcription and requests confirmation
 before routing speech to an agent or configured action. The executable bundle
 includes the application and its Python dependencies, but not the Parakeet
@@ -315,12 +418,15 @@ the transcriber only watches the folder, so either can be restarted alone):
 ```
 
 With `--transcribe` or `--voice-commands`, the receiver starts the transcriber
-as a child process, so inference never blocks the BLE event loop, and stops it
-on exit; the child also watches the receiver's pid and exits if the receiver
-dies, so a crash cannot leave a second transcriber behind. In the packaged
-executable, the child runs the transcriber from the same executable. Do not
-combine it with another transcriber on the same folder, or every recording is
-pasted twice.
+as a child process before it begins its BLE connection. The ASR model is
+downloaded if needed, loaded, and warmed up at companion startup, so it is
+ready before the first recording; the first-ever startup can take longer while
+the roughly 640 MB model is downloaded. Inference never blocks the BLE event
+loop, and the receiver stops the transcriber on exit; the child also watches
+the receiver's pid and exits if the receiver dies, so a crash cannot leave a
+second transcriber behind. In the packaged executable, the child runs the
+transcriber from the same executable. Do not combine it with another
+transcriber on the same folder, or every recording is pasted twice.
 `--transcribe-arg=...` forwards extra flags, for example
 `--transcribe-arg=--modes --transcribe-arg=live`.
 
@@ -372,12 +478,13 @@ prefixes:
 
 Unprefixed speech remains ordinary dictation. With `--partial-live`, partial
 transcripts are never sent to an agent or action; routing only happens after
-the final transcript is ready. Agent prompts and local actions always show
-their destination and require typing `y` or `yes` in the companion terminal.
-No/blank input, a closed terminal, an unknown action, a missing CLI, or
-a command failure does not fall back to pasting the command into the focused
-field. The agent CLIs may also request their own tool permissions; review and
-approve those in the terminal. The companion never adds automatic
+the final transcript is ready. Agent prompts and non-interactive local actions
+show their destination and require typing `y` or `yes` in the companion
+terminal. Interactive local actions use a desktop confirmation popup instead.
+A declined/cancelled prompt, a closed terminal, an unknown action, a missing
+CLI, or a command failure does not fall back to pasting the command into the
+focused field. The agent CLIs may also request their own tool permissions;
+review and approve those in the terminal. The companion never adds automatic
 “allow all tools” flags.
 
 **OpenCode:** Install and sign in to the `opencode` CLI, then launch the
@@ -411,23 +518,37 @@ prompts; follow those prompts in the companion terminal.
 
 Local actions are an exact-name allowlist, not shell commands derived from
 speech. The example includes read-only Git checks, companion tests, BLE device
-listing, controller firmware build, and Windows companion packaging. It is
+listing, controller firmware build, Windows companion packaging, and an
+interactive authenticated OTA deployer. It is
 tailored to the current Windows checkout path; edit its `cwd` and executable
 paths if your repository or PlatformIO installation is elsewhere. Install it
 to the per-user location:
 
 ```powershell
-New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\StickS3Intercom"
-Copy-Item companion\actions.example.json "$env:LOCALAPPDATA\StickS3Intercom\actions.json"
+$actionsDirectory = "$env:LOCALAPPDATA\StickS3Intercom"
+$actionsPath = Join-Path $actionsDirectory "actions.json"
+New-Item -ItemType Directory -Force $actionsDirectory
+if (-not (Test-Path $actionsPath)) {
+    Copy-Item companion\actions.example.json $actionsPath
+} else {
+    Write-Host "Keeping existing actions.json; merge selected template entries manually."
+}
 ```
 
+If `actions.json` exists, merge the desired entries into it instead of
+overwriting your actions.
 Say “Run action: git status”, “Run action: run companion tests”, or one of the
 other exact configured names. Edit `actions.json` to add fixed
 executable/argument arrays and optional working directories. Relative working
 directories are resolved relative to that JSON file. Speech only selects the
 exact configured action name; it is never appended to the executable
 arguments, and commands are launched without a shell. Each action still asks
-for terminal confirmation before it runs. Use only scripts you trust.
+for confirmation before it runs. Interactive actions use a desktop popup;
+other actions ask in the terminal. Use only scripts you trust.
+Actions marked `interactive` run in the background so the transcriber remains
+available. The OTA action uses desktop dialogs for environment/image choices
+and address/password entry; spoken choice names highlight an option, but
+speech is never entered into text fields.
 
 These integrations are intentionally separate adapters: OpenCode uses its
 local API, Claude Code and GitHub Copilot use their supported CLIs, and local

@@ -558,6 +558,8 @@ def start_transcriber(
         ]
     if args.voice_commands:
         command.append("--voice-commands")
+    if args.transcribe or args.voice_commands:
+        print("Starting the ASR model now, before BLE connection begins.")
     print("Starting transcriber: " + " ".join(command))
     try:
         return subprocess.Popen(command)
@@ -627,6 +629,11 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--receiver-only",
+        action="store_true",
+        help="disable automatic transcription when starting the packaged app",
+    )
+    parser.add_argument(
         "--voice-commands",
         action="store_true",
         help=(
@@ -652,10 +659,16 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.receiver_only and (args.transcribe or args.voice_commands):
+        parser.error("--receiver-only cannot be combined with transcription options")
     if not args.list:
         clear_existing_recordings(args.output)
     transcriber = None
-    if (args.transcribe or args.voice_commands) and not args.list:
+    if (
+        (args.transcribe or args.voice_commands)
+        and not args.receiver_only
+        and not args.list
+    ):
         transcriber = start_transcriber(args)
     try:
         asyncio.run(run(args))

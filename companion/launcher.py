@@ -10,6 +10,9 @@ def main() -> None:
 
         run_transcriber()
     else:
+        if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+            sys.argv.append("--transcribe")
+
         from ble_mic_receiver import main as run_receiver
 
         run_receiver()

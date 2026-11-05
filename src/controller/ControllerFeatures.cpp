@@ -34,9 +34,9 @@ constexpr uint8_t kKeyC = 0x06;
 constexpr uint8_t kKeyV = 0x19;
 constexpr uint8_t kKeyEnter = 0x28;
 constexpr uint8_t kKeyEscape = 0x29;
-constexpr uint8_t kKeyHome = 0x4A;
 constexpr uint8_t kKeyPageUp = 0x4B;
-constexpr uint8_t kKeyEnd = 0x4D;
+constexpr uint8_t kKeyArrowRight = 0x4F;
+constexpr uint8_t kKeyArrowLeft = 0x50;
 constexpr uint8_t kKeyPageDown = 0x4E;
 
 int8_t axisToMouse(int16_t value, uint8_t dpiLevel) {
@@ -628,15 +628,15 @@ void ControllerFeatures::handleGesture(float gyroX, float gyroY,
   }
 
   if (fabsf(gyroX) >= kGesturePitchDps) {
-    _hid.sendKey(kKeyHome);
-    delay(40);
-    _hid.sendKey(kKeyEnter);
-    Serial.println("[gesture] front/back -> select first option");
+    const uint8_t key = gyroX > 0.0f ? kKeyEnter : kKeyEscape;
+    _hid.sendKey(key);
+    Serial.printf("[gesture] front/back -> %s\n",
+                  key == kKeyEnter ? "accept" : "cancel");
   } else if (fabsf(gyroY) >= kGestureTwistDps) {
-    _hid.sendKey(kKeyEnd);
-    delay(40);
-    _hid.sendKey(kKeyEnter);
-    Serial.println("[gesture] left/right -> select last option");
+    const uint8_t key = gyroY > 0.0f ? kKeyArrowRight : kKeyArrowLeft;
+    _hid.sendKey(key);
+    Serial.printf("[gesture] left/right -> %s option\n",
+                  key == kKeyArrowRight ? "next" : "previous");
   } else {
     return;
   }
