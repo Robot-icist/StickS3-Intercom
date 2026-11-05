@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -23,6 +24,7 @@ HEADER_SIZE = 6
 FLAG_LIVE = 0x01
 FLAG_CLIP = 0x02
 FLAG_END = 0x80
+RECORDING_NAME = re.compile(r"stickS3_\d+_(?:live|clip)\.wav\Z")
 
 STEP_TABLE = (
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37,
@@ -363,6 +365,18 @@ def create_client(
     )
 
 
+def clear_existing_recordings(output_dir: Path) -> int:
+    """Remove prior WAV recordings created by this receiver from output_dir."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    removed = 0
+    for path in output_dir.iterdir():
+        if path.is_file() and RECORDING_NAME.fullmatch(path.name):
+            path.unlink()
+            removed += 1
+    print(f"Cleared {removed} existing StickS3 recording(s) from {output_dir}.")
+    return removed
+
+
 async def connect_to_candidates(
     candidates: list[Candidate],
     timeout: float,
@@ -509,21 +523,13 @@ async def run(args: argparse.Namespace) -> None:
 def start_transcriber(
     args: argparse.Namespace,
 ) -> "subprocess.Popen[bytes] | None":
-    """Launch live_transcriber.py on the same output folder.
+    """Launch the transcriber as a child process on the same output folder.
 
     The transcriber is a separate process so that model inference never
     blocks the BLE event loop; it picks up both live streams and clips as
     soon as the receiver closes each WAV file.
     """
-    script = Path(__file__).resolve().with_name("live_transcriber.py")
-    if not script.is_file():
-        print(f"Transcriber not found next to the receiver: {script}",
-              file=sys.stderr)
-        return None
-    command = [
-        sys.executable,
-        "-u",
-        str(script),
+    transcriber_args = [
         "--watch",
         str(args.output),
         "--method",
@@ -532,6 +538,26 @@ def start_transcriber(
         str(os.getpid()),
         *args.transcribe_arg,
     ]
+    if getattr(sys, "frozen", False):
+        command = [
+            sys.executable,
+            "--internal-transcriber",
+            *transcriber_args,
+        ]
+    else:
+        script = Path(__file__).resolve().with_name("live_transcriber.py")
+        if not script.is_file():
+            print(f"Transcriber not found next to the receiver: {script}",
+                  file=sys.stderr)
+            return None
+        command = [
+            sys.executable,
+            "-u",
+            str(script),
+            *transcriber_args,
+        ]
+    if args.voice_commands:
+        command.append("--voice-commands")
     print("Starting transcriber: " + " ".join(command))
     try:
         return subprocess.Popen(command)
@@ -596,8 +622,16 @@ def main() -> None:
         "--transcribe",
         action="store_true",
         help=(
-            "also start live_transcriber.py, which transcribes each finished "
+            "also start live transcription, which transcribes each finished "
             "live stream or clip and pastes the text into the focused input"
+        ),
+    )
+    parser.add_argument(
+        "--voice-commands",
+        action="store_true",
+        help=(
+            "also start transcription and enable confirmed OpenCode, Claude "
+            "Code, and configured action routing"
         ),
     )
     parser.add_argument(
@@ -618,8 +652,10 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if not args.list:
+        clear_existing_recordings(args.output)
     transcriber = None
-    if args.transcribe and not args.list:
+    if (args.transcribe or args.voice_commands) and not args.list:
         transcriber = start_transcriber(args)
     try:
         asyncio.run(run(args))

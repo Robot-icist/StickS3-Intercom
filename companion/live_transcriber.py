@@ -56,6 +56,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from voice_actions import (
+    VoiceCommandRouter,
+    default_actions_path,
+    parse_intent,
+)
+
 DEFAULT_MODEL = "nemo-parakeet-tdt-0.6b-v3"
 LONG_AUDIO_SECONDS = 28.0
 
@@ -929,6 +935,64 @@ def main() -> None:
         help="beep after pasting",
     )
     parser.add_argument(
+        "--voice-commands",
+        action="store_true",
+        help=(
+            "route final transcripts prefixed with 'OpenCode:', 'Claude:', "
+            "'Copilot:', or 'run action:' after interactive confirmation; "
+            "other speech is still dictated normally"
+        ),
+    )
+    parser.add_argument(
+        "--actions-config",
+        type=Path,
+        default=default_actions_path(),
+        help="JSON allowlist for 'run action:' (default: user config folder)",
+    )
+    parser.add_argument(
+        "--opencode-command",
+        default=os.environ.get("OPENCODE_CLI_COMMAND", "opencode"),
+        help="OpenCode CLI command (default: OPENCODE_CLI_COMMAND or opencode)",
+    )
+    parser.add_argument(
+        "--opencode-session",
+        default=os.environ.get("OPENCODE_SESSION_ID"),
+        help="OpenCode session ID; if omitted, select a session interactively",
+    )
+    parser.add_argument(
+        "--claude-command",
+        default=os.environ.get("CLAUDE_CODE_COMMAND", "claude"),
+        help="Claude Code CLI command (default: CLAUDE_CODE_COMMAND or claude)",
+    )
+    parser.add_argument(
+        "--claude-session",
+        default=os.environ.get("CLAUDE_CODE_SESSION_ID"),
+        help="resume this Claude Code session; otherwise start a one-shot run",
+    )
+    parser.add_argument(
+        "--claude-cwd",
+        type=Path,
+        default=None,
+        help="working directory for Claude Code (default: current directory)",
+    )
+    parser.add_argument(
+        "--copilot-command",
+        default=os.environ.get("COPILOT_CLI_COMMAND", "copilot"),
+        help="GitHub Copilot CLI command (default: COPILOT_CLI_COMMAND or copilot)",
+    )
+    parser.add_argument(
+        "--copilot-cwd",
+        type=Path,
+        default=None,
+        help="working directory for Copilot CLI (default: current directory)",
+    )
+    parser.add_argument(
+        "--command-timeout",
+        type=float,
+        default=300,
+        help="maximum seconds for agent CLI/local actions (default: 300)",
+    )
+    parser.add_argument(
         "--exit-with",
         type=int,
         metavar="PID",
@@ -938,6 +1002,23 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    voice_router = None
+    if args.voice_commands:
+        try:
+            voice_router = VoiceCommandRouter(
+                opencode_command=args.opencode_command,
+                opencode_session=args.opencode_session,
+                claude_command=args.claude_command,
+                claude_session=args.claude_session,
+                claude_cwd=args.claude_cwd,
+                copilot_command=args.copilot_command,
+                copilot_cwd=args.copilot_cwd,
+                actions_path=args.actions_config,
+                timeout=args.command_timeout,
+            )
+        except ValueError as error:
+            parser.error(str(error))
 
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1003,7 +1084,8 @@ def main() -> None:
             except queue.Empty:
                 if partials_enabled and not stop.is_set():
                     scan_partials(
-                        watcher, transcriber, injector, args, live_state
+                        watcher, transcriber, injector, args, live_state,
+                        voice_router,
                     )
                 continue
             if job is None:
@@ -1011,7 +1093,10 @@ def main() -> None:
             if stop.is_set():
                 continue
             previous = live_state.pop(job.path.name, LiveState()).text
-            process_job(job, transcriber, injector, args, previous=previous)
+            process_job(
+                job, transcriber, injector, args, previous=previous,
+                voice_router=voice_router,
+            )
 
     thread = threading.Thread(target=worker, name="transcriber", daemon=True)
     thread.start()
@@ -1029,10 +1114,22 @@ def main() -> None:
         "on the StickS3."
     )
     if args.method == "paste":
-        print("The transcript is pasted at the caret with Ctrl+V.")
+        if voice_router is None:
+            print("The transcript is pasted at the caret with Ctrl+V.")
+        else:
+            print(
+                "Dictation is pasted at the caret; explicit agent/action "
+                "prefixes are routed after confirmation."
+            )
     if partials_enabled:
         print(f"Live streams update the field every "
               f"{args.partial_interval:g}s and are rewritten once at the end.")
+    if voice_router is not None:
+        print(
+            "Voice commands enabled. Say 'OpenCode: ...', 'Claude: ...', "
+            "'Copilot: ...', or 'run action: ...'; every command requires "
+            "terminal approval."
+        )
     try:
         watcher.run(jobs.put)
     except KeyboardInterrupt:
@@ -1103,6 +1200,7 @@ def scan_partials(
     injector,
     args,
     state: dict[str, LiveState],
+    voice_router: Optional[VoiceCommandRouter] = None,
 ) -> None:
     """Transcribe open live streams and update the field in place."""
     now = time.monotonic()
@@ -1146,6 +1244,12 @@ def scan_partials(
         if not text or text == entry.text:
             continue
 
+        if voice_router is not None:
+            intent = parse_intent(text)
+            if intent.target != "dictation":
+                continue
+            text = intent.content
+
         print(f"[{time.strftime('%H:%M:%S')}] ~{name} "
               f"({format_duration(audio.duration)}, {elapsed:.2f}s)\n  {text}")
         if deliver(text, entry.text, injector, args,
@@ -1164,6 +1268,7 @@ def process_job(
     injector,
     args,
     previous: str = "",
+    voice_router: Optional[VoiceCommandRouter] = None,
 ) -> None:
     name = job.path.name
     if job.info.duration < args.min_duration:
@@ -1207,6 +1312,23 @@ def process_job(
             )
         except OSError as error:
             print(f"  could not save text: {error}")
+
+    if voice_router is not None:
+        intent = parse_intent(text)
+        if intent.target in (
+            "opencode", "claude", "copilot", "action", "pending"
+        ) and previous:
+            if deliver(
+                "", previous, injector, args, trailing_space=False
+            ):
+                print("  -> removed the partial dictation preview")
+        try:
+            text = voice_router.handle(text)
+        except RuntimeError as error:
+            print(f"  voice command failed: {error}", file=sys.stderr)
+            return
+        if text is None:
+            return
 
     if deliver(
         text,

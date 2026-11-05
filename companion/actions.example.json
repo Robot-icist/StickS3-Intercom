@@ -1,0 +1,70 @@
+{
+  "actions": {
+    "git status": {
+      "command": ["git", "status", "--short", "--branch"],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Show the current branch and changed files"
+    },
+    "diff summary": {
+      "command": ["git", "diff", "--stat"],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Summarize tracked code changes"
+    },
+    "check diff": {
+      "command": ["git", "diff", "--check"],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Check tracked changes for whitespace errors"
+    },
+    "recent commits": {
+      "command": ["git", "log", "--oneline", "-5"],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Show the five most recent commits"
+    },
+    "run companion tests": {
+      "command": [
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "companion",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Run the companion's focused Python test suite"
+    },
+    "build controller firmware": {
+      "command": [
+        "C:\\Users\\Gille\\.platformio\\penv\\Scripts\\pio.exe",
+        "run",
+        "-e",
+        "sticks3_ble_hid"
+      ],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Build the StickS3 BLE HID controller firmware"
+    },
+    "build companion app": {
+      "command": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\companion\\build_windows.ps1"
+      ],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Build the Windows companion executable"
+    },
+    "list bluetooth devices": {
+      "command": [
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",
+        "companion\\ble_mic_receiver.py",
+        "--list"
+      ],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "List paired BLE devices for the companion"
+    }
+  }
+}

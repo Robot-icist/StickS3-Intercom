@@ -95,9 +95,17 @@ C:\Users\Gille\.platformio\penv\Scripts\pio.exe run -e sticks3_ble_hid -t upload
 
 Pair the computer with **StickS3 BLE Controller**. The default mouse mode maps
 the joystick to pointer movement, a click to left-click, a double-click to
-right-click, BtnA/BtnB to Ctrl+C/Ctrl+V, and a left/right gesture to `n` and a
-front/back gesture to `y`. These `y`/`n` keystrokes can answer prompts in
-OpenCode, Claude Code, Copilot, and similar harnesses.
+right-click, BtnA/BtnB to Ctrl+C/Ctrl+V, and IMU gestures to approval-menu
+navigation: front/back selects the first option and presses Enter; left/right
+selects the last option and presses Enter. In OpenCode's default permission
+prompt this means approve once / reject, without choosing the broader
+"always allow" option. Keep the relevant agent prompt focused before gesturing.
+The same Home/Enter and End/Enter sequences are sent regardless of which
+harness is focused. They work as accept/reject only when that harness's focused
+prompt is a selectable menu whose first option accepts and last option
+rejects; the controller cannot detect which application is active. Verify a
+prompt before relying on it. The separate voice-command confirmation in the
+companion console still requires typing `y` or `yes`.
 If the controller was paired before a firmware update, remove/forget the old
 Bluetooth device on the computer and pair it again so the host refreshes the
 cached HID report descriptor.
@@ -123,8 +131,8 @@ mode is saved in NVS. Hold BtnA for about 0.7 seconds to jump directly between
 Microphone mode and the previous mode without cycling through the modes in
 between; the joystick hold still cycles every mode.
 Navigation maps joystick up/down to scrolling, a click/double-click to
-Enter/Escape, and BtnA/BtnB to Page Up/Page Down. Yes/no IMU gestures work in
-Mouse and Navigation modes.
+Enter/Escape, and BtnA/BtnB to Page Up/Page Down. Approval-menu IMU gestures
+work in Mouse and Navigation modes.
 
 In IMU Orientation mode, move the joystick left/right to rotate the
 controller's base orientation in 90-degree steps. Press BtnA to flip joystick
@@ -197,11 +205,43 @@ After installing the dependencies above, each of these is a complete command:
 
 # 6. One dictation, English-only model, GPU when available.
 .\.venv\Scripts\python.exe companion\live_transcriber.py --model nemo-parakeet-tdt-0.6b-v2 --device cuda
+
+# 7. Full companion: BLE receiver, transcription, partial live text, and voice commands.
+.\.venv\Scripts\python.exe companion\ble_mic_receiver.py --voice-commands --transcribe-arg=--partial-live
 ```
 
 Focus the input field and leave the caret where the text should go before
 recording. With `--transcribe`, `--transcribe-method type|none` sends keystrokes
 instead of pasting, or only prints to the console.
+
+The full companion command above keeps the terminal open for confirmation
+before agent prompts and local actions are run. On the first transcription,
+Parakeet is downloaded to the Hugging Face cache (about 640 MB); subsequent
+runs reuse the cache.
+
+#### Windows executable
+
+The companion can also be packaged as a Windows console application. From the
+repository root, build it with the project virtual environment:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\companion\build_windows.ps1
+```
+
+The script installs the build-only PyInstaller dependency into `.venv` and
+creates an onedir bundle at `dist\StickS3Companion`. Run the same full-feature
+configuration with:
+
+```powershell
+.\dist\StickS3Companion\StickS3Companion.exe --voice-commands --transcribe-arg=--partial-live
+```
+
+Keep the console visible: it displays transcription and requests confirmation
+before routing speech to an agent or configured action. The executable bundle
+includes the application and its Python dependencies, but not the Parakeet
+model; the first transcription still needs internet access to download the
+model into the user's Hugging Face cache. This is an onedir build, so distribute
+the whole `dist\StickS3Companion` folder rather than copying the `.exe` alone.
 
 If the automatic lookup cannot find the controller (for example because its
 Windows name differs), list the paired devices and connect by address:
@@ -226,8 +266,11 @@ If you already installed Bleak elsewhere, install it into this environment
 with `.\.venv\Scripts\python.exe -m pip install bleak`.
 
 WAV recordings are saved to `recordings` by default; pass `--output PATH` to
-choose another directory. The receiver runs as a Python CLI and is deliberately
-separate from speech-to-text: `companion/live_transcriber.py` watches the same
+choose another directory. Each receiver startup removes previous StickS3
+recording WAV files from that output directory before connecting; unrelated
+files and subdirectories are left untouched. The receiver runs as a Python CLI
+and is deliberately separate from speech-to-text:
+`companion/live_transcriber.py` watches the same
 folder, so either side can be restarted without touching the other. Python with
 Bleak is used because it provides a relatively straightforward BLE central API
 on Windows, macOS, and Linux.
@@ -271,12 +314,13 @@ the transcriber only watches the folder, so either can be restarted alone):
 .\.venv\Scripts\python.exe companion\live_transcriber.py
 ```
 
-With `--transcribe` the receiver starts
-`live_transcriber.py --watch <output> --method <paste|type|none>` as a child
-process, so inference never blocks the BLE event loop, and stops it on exit;
-the child also watches the receiver's pid and exits if the receiver dies, so a
-crash cannot leave a second transcriber behind. Do not combine it with another
-transcriber on the same folder, or every recording is pasted twice.
+With `--transcribe` or `--voice-commands`, the receiver starts the transcriber
+as a child process, so inference never blocks the BLE event loop, and stops it
+on exit; the child also watches the receiver's pid and exits if the receiver
+dies, so a crash cannot leave a second transcriber behind. In the packaged
+executable, the child runs the transcriber from the same executable. Do not
+combine it with another transcriber on the same folder, or every recording is
+pasted twice.
 `--transcribe-arg=...` forwards extra flags, for example
 `--transcribe-arg=--modes --transcribe-arg=live`.
 
@@ -306,6 +350,92 @@ Each update needs at least `--partial-min-audio` seconds of new audio (default
 re-transcribes the session from the start; beyond 28 s that uses Silero VAD.
 Partial text is a preview, and the final pass after the end marker is
 authoritative.
+
+#### Voice commands for OpenCode, Claude Code, and Copilot
+
+Voice command routing is opt-in (disabled by default). Start the receiver and
+transcriber together:
+
+```powershell
+.\.venv\Scripts\python.exe companion\ble_mic_receiver.py --voice-commands
+```
+
+Or add `--voice-commands` to `live_transcriber.py` if the receiver is already
+running separately. At the end of a capture, use one of these explicit spoken
+prefixes:
+
+- **“Dictate: …”** pastes the remaining words into the focused field.
+- **“OpenCode: …”** sends a prompt to the selected OpenCode session.
+- **“Claude: …”** (or “Claude Code: …”) runs the Claude Code CLI prompt.
+- **“Copilot: …”** (or “GitHub Copilot: …”) runs a GitHub Copilot CLI prompt.
+- **“Run action: …”** runs a named, locally allowlisted action.
+
+Unprefixed speech remains ordinary dictation. With `--partial-live`, partial
+transcripts are never sent to an agent or action; routing only happens after
+the final transcript is ready. Agent prompts and local actions always show
+their destination and require typing `y` or `yes` in the companion terminal.
+No/blank input, a closed terminal, an unknown action, a missing CLI, or
+a command failure does not fall back to pasting the command into the focused
+field. The agent CLIs may also request their own tool permissions; review and
+approve those in the terminal. The companion never adds automatic
+“allow all tools” flags.
+
+**OpenCode:** Install and sign in to the `opencode` CLI, then launch the
+companion from the project directory you want OpenCode to work in. The
+companion lists that project's sessions with `opencode session list --format
+json`, asks which session to use, and sends the confirmed prompt with
+`opencode run --session`. This uses OpenCode's CLI/background service and does
+not require manually starting `opencode serve` or keeping port 4096 open.
+Set `OPENCODE_SESSION_ID` to skip session selection, or
+`OPENCODE_CLI_COMMAND` if the CLI has a different name. When running
+`live_transcriber.py` directly, `--opencode-command` is also available. The
+companion never passes `--auto`; OpenCode's own permission prompts remain
+visible in the terminal.
+
+**Claude Code:** Install and authenticate the `claude` CLI, and run the
+companion from the project directory you want Claude to work in. The companion
+starts a confirmed `claude -p` invocation and leaves Claude's own permission
+prompts visible. By default this is a one-shot CLI run; set
+`CLAUDE_CODE_SESSION_ID` to resume a specific CLI session, or
+`CLAUDE_CODE_COMMAND` / `--claude-command` if the executable is named
+differently. `--claude-cwd PATH` selects its working directory.
+
+**GitHub Copilot CLI:** Install and sign in to [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
+(on Windows, `winget install GitHub.Copilot`), then use “Copilot: …”. The
+companion starts a one-shot request using the CLI's documented programmatic
+`--prompt` interface. It does not enable automatic tool approval. Use
+`COPILOT_CLI_COMMAND` or `--copilot-command` to select a non-default
+executable, and `--copilot-cwd PATH` to select the project directory.
+Copilot CLI may use its own login, repository trust, and tool permission
+prompts; follow those prompts in the companion terminal.
+
+Local actions are an exact-name allowlist, not shell commands derived from
+speech. The example includes read-only Git checks, companion tests, BLE device
+listing, controller firmware build, and Windows companion packaging. It is
+tailored to the current Windows checkout path; edit its `cwd` and executable
+paths if your repository or PlatformIO installation is elsewhere. Install it
+to the per-user location:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\StickS3Intercom"
+Copy-Item companion\actions.example.json "$env:LOCALAPPDATA\StickS3Intercom\actions.json"
+```
+
+Say “Run action: git status”, “Run action: run companion tests”, or one of the
+other exact configured names. Edit `actions.json` to add fixed
+executable/argument arrays and optional working directories. Relative working
+directories are resolved relative to that JSON file. Speech only selects the
+exact configured action name; it is never appended to the executable
+arguments, and commands are launched without a shell. Each action still asks
+for terminal confirmation before it runs. Use only scripts you trust.
+
+These integrations are intentionally separate adapters: OpenCode uses its
+local API, Claude Code and GitHub Copilot use their supported CLIs, and local
+actions use explicit fixed argument lists. This keeps the BLE receiver and
+local Parakeet transcription usable without agent tools installed. See the
+[OpenCode SDK/server documentation](https://opencode.ai/docs/sdk/) and the
+[Claude Agent SDK / headless CLI documentation](https://code.claude.com/docs/en/agent-sdk/overview)
+for future deeper, session-aware integrations.
 
 Useful options:
 
