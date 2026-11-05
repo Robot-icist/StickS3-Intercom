@@ -129,11 +129,44 @@ void ControllerUi::showError(const char* message) {
 }
 
 void ControllerUi::render(const ControllerViewState& state, uint32_t now) {
-  if (state.demoMode) {
+  if (state.modePickerActive) {
+    renderModePicker(state, now);
+  } else if (state.demoMode) {
     renderImuCube(state);
   } else {
     renderController(state, now);
   }
+}
+
+void ControllerUi::renderModePicker(const ControllerViewState& state,
+                                    uint32_t now) {
+  static const char* const modeNames[] = {
+      "MOUSE", "NAVIGATION", "ORIENTATION", "SPEED", "MICROPHONE"};
+  _screen.fillScreen(kColorBackground);
+  _screen.setTextDatum(lgfx::textdatum_t::top_center);
+  _screen.setFont(&fonts::Font2);
+  _screen.setTextColor(kColorPrimary, kColorBackground);
+  _screen.drawString("SELECT MODE", _screen.width() / 2, 12);
+  _screen.setFont(&fonts::Font0);
+  for (uint8_t index = 0; index < 5; ++index) {
+    const int16_t y = 48 + index * 34;
+    const bool selected = index == state.selectedMode;
+    if (selected) {
+      _screen.fillRoundRect(12, y - 5, _screen.width() - 24, 28, 5,
+                            kColorPanel);
+    }
+    _screen.setTextColor(selected ? kColorAccent : kColorSecondary,
+                         selected ? kColorPanel : kColorBackground);
+    _screen.drawString(modeNames[index], _screen.width() / 2, y);
+  }
+  _screen.setTextColor(kColorPrimary, kColorBackground);
+  drawClippedMarquee(_screen, "Move stick: choose", 8, 226,
+                     _screen.width() - 16, 12, kColorPrimary,
+                     kColorBackground, now);
+  drawClippedMarquee(_screen, "Click: select | B: cancel", 8, 209,
+                     _screen.width() - 16, 12, kColorSecondary,
+                     kColorBackground, now);
+  _screen.pushSprite(0, 0);
 }
 
 void ControllerUi::renderController(const ControllerViewState& state,
@@ -197,16 +230,16 @@ void ControllerUi::renderController(const ControllerViewState& state,
     _screen.setTextColor(statusColor, kColorPanel);
     _screen.drawString(status, _screen.width() / 2, 82);
     _screen.setFont(&fonts::Font0);
-    drawClippedMarquee(_screen, "Stick click: live on / off", 8, 145,
+    drawClippedMarquee(_screen, "Hold stick: live stream", 8, 145,
                        _screen.width() - 16, 12, kColorPrimary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "A: record / send clip", 8, 163,
+    drawClippedMarquee(_screen, "Click: left | double-click: right", 8, 163,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "B: cancel | hold A: back", 8, 181,
+    drawClippedMarquee(_screen, "A: record / send clip", 8, 181,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "Stick hold: next mode", 8, 199,
+    drawClippedMarquee(_screen, "B: cancel | hold A: back", 8, 199,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
     drawClippedMarquee(_screen, "Requires BLE audio companion", 8, 217,
@@ -236,7 +269,7 @@ void ControllerUi::renderController(const ControllerViewState& state,
     drawClippedMarquee(_screen, "Stick L/R: slower / faster", 8, 173,
                        _screen.width() - 16, 12, kColorPrimary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "Click: save | stick hold: next", 8, 191,
+    drawClippedMarquee(_screen, "Click: save | hold stick: select mode", 8, 191,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
     drawClippedMarquee(_screen, "A: copy  B: paste | hold A: mic", 8, 209,
@@ -282,7 +315,7 @@ void ControllerUi::renderController(const ControllerViewState& state,
   drawClippedMarquee(_screen, "Gesture L/R: NO | F/B: YES", 8, 162,
                      _screen.width() - 16, 12, kColorSecondary,
                      kColorBackground, now);
-  drawClippedMarquee(_screen, "Stick hold: mouse > nav > IMU > speed > mic", 8,
+  drawClippedMarquee(_screen, "Stick hold: select mode", 8,
                      181, _screen.width() - 16, 12, kColorSecondary,
                      kColorBackground, now);
   drawClippedMarquee(_screen, "Hold A: mic <-> last mode", 8, 198,

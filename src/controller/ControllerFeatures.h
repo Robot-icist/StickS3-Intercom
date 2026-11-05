@@ -40,7 +40,6 @@ class ControllerFeatures {
   bool saveDpiLevel();
   bool saveMode(Mode mode);
   void applyMode(Mode mode);
-  void cycleMode();
   void toggleMicrophoneMode();
   void toggleJoystickFlip(bool flipX);
   void updateBattery(uint32_t now);
@@ -77,7 +76,11 @@ class ControllerFeatures {
   bool _flipY = false;
   bool _pendingFlipX = false;
   bool _pendingFlipY = false;
+  bool _modePickerActive = false;
+  bool _modePickerStickCentered = false;
+  bool _modePickerIgnoreButtonRelease = false;
   uint8_t _joystickErrorCount = 0;
+  uint8_t _selectedMode = 0;
   uint8_t _dpiLevel = 3;
   int8_t _batteryLevel = -1;
   uint8_t _baseRotation = 0;

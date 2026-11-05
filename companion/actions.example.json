@@ -3,7 +3,8 @@
     "git status": {
       "command": ["git", "status", "--short", "--branch"],
       "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
-      "description": "Show the current branch and changed files"
+      "description": "Show the current branch and changed files",
+      "aliases": ["état du dépôt", "statut de git"]
     },
     "diff summary": {
       "command": ["git", "diff", "--stat"],
@@ -73,7 +74,8 @@
         "--list"
       ],
       "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
-      "description": "List paired BLE devices for the companion"
+      "description": "List paired BLE devices for the companion",
+      "aliases": ["lister les appareils bluetooth"]
     }
   }
 }

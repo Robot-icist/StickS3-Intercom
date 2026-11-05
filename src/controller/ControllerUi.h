@@ -11,6 +11,8 @@ struct ControllerViewState {
   bool navigationMode = false;
   bool dpiMode = false;
   bool micMode = false;
+  bool modePickerActive = false;
+  uint8_t selectedMode = 0;
   bool connected = false;
   bool hidReady = false;
   bool micSubscribed = false;
@@ -42,6 +44,7 @@ class ControllerUi {
 
  private:
   void renderController(const ControllerViewState& state, uint32_t now);
+  void renderModePicker(const ControllerViewState& state, uint32_t now);
   void renderImuCube(const ControllerViewState& state);
 
   LGFX_Sprite _screen{&M5.Display};

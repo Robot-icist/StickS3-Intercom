@@ -109,6 +109,7 @@ class ActionEditor:
         self.executable = StringVar()
         self.cwd = StringVar()
         self.description = StringVar()
+        self.aliases = StringVar()
         self.interactive = BooleanVar(value=True)
 
         self._build()
@@ -123,7 +124,8 @@ class ActionEditor:
         ttk.Label(
             outer,
             text=(
-                "Say “run action: name” to launch an allow-listed command. "
+                "Say “run action: name” or ask naturally in English or French. "
+                "Add translated names as comma-separated aliases. "
                 "Actions ask for confirmation by default."
             ),
             style="Muted.TLabel",
@@ -192,19 +194,20 @@ class ActionEditor:
         self.arguments.grid(row=6, column=0, sticky="ew")
         self._entry(form, 7, "Working directory (optional)", self.cwd)
         self._entry(form, 9, "Description", self.description)
+        self._entry(form, 11, "Voice aliases (comma-separated)", self.aliases)
         ttk.Checkbutton(
             form,
             text="Ask before running this action",
             variable=self.interactive,
-        ).grid(row=11, column=0, sticky="w", pady=(14, 8))
+        ).grid(row=13, column=0, sticky="w", pady=(14, 8))
         ttk.Label(
             form,
             text="Commands run as fixed arguments, never through a shell.",
             style="Muted.TLabel",
-        ).grid(row=12, column=0, sticky="w")
+        ).grid(row=14, column=0, sticky="w")
         ttk.Button(
             form, text="Save action", style="Accent.TButton", command=self._save
-        ).grid(row=13, column=0, sticky="e", pady=(20, 0))
+        ).grid(row=15, column=0, sticky="e", pady=(20, 0))
 
     @staticmethod
     def _entry(
@@ -249,6 +252,11 @@ class ActionEditor:
         cwd = definition.get("cwd", "")
         self.cwd.set(str(cwd) if cwd is not None else "")
         self.description.set(str(definition.get("description", "")))
+        aliases = definition.get("aliases", [])
+        self.aliases.set(
+            ", ".join(alias for alias in aliases if isinstance(alias, str))
+            if isinstance(aliases, list) else ""
+        )
         self.interactive.set(bool(definition.get("interactive", True)))
 
     def _new_action(self) -> None:
@@ -259,6 +267,7 @@ class ActionEditor:
         self.arguments.delete("1.0", "end")
         self.cwd.set("")
         self.description.set("")
+        self.aliases.set("")
         self.interactive.set(True)
 
     def _delete_action(self) -> None:
@@ -320,6 +329,12 @@ class ActionEditor:
             "description": self.description.get().strip(),
             "interactive": self.interactive.get(),
         }
+        aliases = [
+            alias.strip() for alias in self.aliases.get().split(",")
+            if alias.strip()
+        ]
+        if aliases:
+            definition["aliases"] = aliases
         cwd = self.cwd.get().strip()
         if cwd:
             definition["cwd"] = cwd

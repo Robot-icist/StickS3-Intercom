@@ -20,6 +20,7 @@ class DesktopActionConfigTests(unittest.TestCase):
                     "cwd": temporary,
                     "description": "Review the current change",
                     "interactive": True,
+                    "aliases": ["revue du changement"],
                 }
             }
 

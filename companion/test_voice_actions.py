@@ -22,6 +22,9 @@ class ParseIntentTests(unittest.TestCase):
         cases = {
             "OpenCode: fix the failing test": ("opencode", "fix the failing test"),
             "Open code, explain the diff": ("opencode", "explain the diff"),
+            "  RUN   ACTION : show setup": ("action", "show setup"),
+            "run-action: show setup": ("action", "show setup"),
+            "rUnAcTiOn: show setup": ("action", "show setup"),
             "opencode: inspect this project": ("opencode", "inspect this project"),
             "open-code: inspect this project": ("opencode", "inspect this project"),
             "open_code inspect this project": (
@@ -138,6 +141,80 @@ class VoiceCommandRouterTests(unittest.TestCase):
 
             run_action.assert_called_once_with("fresh action")
 
+    def test_action_name_matching_ignores_case_spacing_and_punctuation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "Git Status": {"command": ["git", "status"]}
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with patch.object(router, "_run_action") as run_action:
+                router.route("RUN ACTION: Git-Status")
+
+            run_action.assert_called_once_with("git status")
+
+    def test_english_context_and_asr_typo_match_an_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "git status": {"command": ["git", "status"]}
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with patch.object(router, "_run_action") as run_action:
+                router.route("Could you please run the GitStatus action now?")
+
+            run_action.assert_called_once_with("git status")
+
+    def test_french_context_and_translated_alias_match_an_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "git status": {
+                            "command": ["git", "status"],
+                            "aliases": ["état du dépôt"],
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with patch.object(router, "_run_action") as run_action:
+                router.route(
+                    "Peux-tu lancer l’action « état du dépôt » maintenant ?"
+                )
+
+            run_action.assert_called_once_with("git status")
+
+    def test_unmatched_contextual_speech_remains_dictation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "git status": {"command": ["git", "status"]}
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+
+            self.assertEqual(
+                router.route("Please run the unrelated task"),
+                "Please run the unrelated task",
+            )
+
     def test_declined_action_does_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config = Path(temporary) / "actions.json"
@@ -173,6 +250,8 @@ class VoiceCommandRouterTests(unittest.TestCase):
                 patch("voice_actions.shutil.which", return_value="python.exe"),
                 patch("voice_actions.subprocess.Popen") as popen,
                 patch("voice_actions.threading.Thread") as thread,
+                patch("voice_actions.subprocess.CREATE_NEW_CONSOLE", 16,
+                      create=True),
             ):
                 router.handle("run action: ota update")
 
@@ -184,6 +263,7 @@ class VoiceCommandRouterTests(unittest.TestCase):
             self.assertTrue(
                 Path(popen.call_args.kwargs["env"]["STICKS3_INTERACTION_DIR"]).is_dir()
             )
+            self.assertEqual(popen.call_args.kwargs["creationflags"], 16)
             thread.assert_called_once()
 
     def test_interactive_action_route_opens_voice_aware_confirmation(self) -> None:
@@ -355,6 +435,27 @@ class VoiceCommandRouterTests(unittest.TestCase):
                 "--auto", run.call_args_list[1].args[0]
             )
             self.assertEqual(run.call_args_list[1].kwargs["cwd"], Path(temporary))
+            self.assertEqual(run.call_args_list[1].kwargs["stderr"], subprocess.PIPE)
+            self.assertTrue(run.call_args_list[1].kwargs["text"])
+
+    def test_opencode_failure_includes_cli_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            router.opencode_session = "session-1"
+            with (
+                patch("builtins.input", return_value="yes"),
+                patch("voice_actions.shutil.which", return_value="opencode.cmd"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 1, stdout="", stderr="Provider authentication failed"
+                    ),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "exit code 1: Provider authentication failed"
+                ):
+                    router.handle("OpenCode: summarize this project")
 
     def test_opencode_confirmation_uses_desktop_dialog_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

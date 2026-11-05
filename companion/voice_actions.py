@@ -10,7 +10,9 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +36,44 @@ _PREFIXES = (
     ("dictate", "dictation"),
 )
 
+_SPOKEN_ACTION = re.compile(
+    r"^(?:(?:please|can you|could you|would you|will you|"
+    r"i want you to|i'd like you to|s'il vous plait|"
+    r"s'il te plait|svp|"
+    r"peux tu|pouvez vous|pourrais tu|pourriez vous|"
+    r"est ce que tu peux|est ce que vous pouvez|je veux|"
+    r"je voudrais|j'aimerais)\s+)*"
+    r"(?:run|start|launch|execute|do|perform|trigger|open|show|check|list|"
+    r"lance|lancer|demarre|demarrer|ouvre|ouvrir|affiche|afficher|"
+    r"montre|montrer|verifie|verifier|liste|fais|faire)"
+    r"[\s,]+(?:(?:the|my|le|la|les|l')\s*)?"
+    r"(?:(?:configured\s+)?action\s*[:,]?\s*)?"
+    r"(?:me\s+)?(.+?)"
+    r"(?:\s+(?:the\s+)?(?:action|command))?"
+    r"(?:\s+(?:please|now|for me|s'il vous plait|maintenant))?"
+    r"\s*[.!?]*\s*$"
+)
+
+
+def _fold_text(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    folded = "".join(
+        character for character in decomposed
+        if not unicodedata.combining(character)
+    )
+    return folded.replace("’", "'")
+
+
+def _normalize_action_name(name: str) -> str:
+    return "".join(character for character in _fold_text(name) if character.isalnum())
+
+
+def _spoken_action_request(transcript: str) -> Optional[str]:
+    folded = re.sub(r"[-_]+", " ", _fold_text(transcript.strip()))
+    folded = folded.replace("«", " ").replace("»", " ")
+    match = _SPOKEN_ACTION.match(folded)
+    return match.group(1).strip(" \t,.;:!?") if match is not None else None
+
 
 def parse_intent(transcript: str) -> Intent:
     """Parse a spoken target prefix; unprefixed speech remains dictation."""
@@ -42,7 +82,8 @@ def parse_intent(transcript: str) -> Intent:
         if target == "opencode":
             pattern = r"^\s*open[\s_-]*code(?=$|[\s,:;.-])"
         else:
-            pattern = rf"^\s*{re.escape(prefix)}(?=$|[\s,:;.-])"
+            words = re.escape(prefix).replace(r"\ ", r"[\s_-]*")
+            pattern = rf"^\s*{words}(?=$|[\s,:;.-])"
         match = re.match(pattern, stripped, flags=re.IGNORECASE)
         if match is not None:
             content = stripped[match.end():].lstrip(" \t,:;.-")
@@ -73,6 +114,7 @@ class Action:
     cwd: Optional[Path]
     description: str
     interactive: bool = False
+    aliases: tuple[str, ...] = ()
 
 
 def load_actions(path: Path) -> dict[str, Action]:
@@ -88,6 +130,7 @@ def load_actions(path: Path) -> dict[str, Action]:
         raise ValueError(f"{path} must contain an 'actions' object")
 
     actions: dict[str, Action] = {}
+    seen_phrases: dict[str, str] = {}
     for name, definition in definitions.items():
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"{path} contains an empty action name")
@@ -111,8 +154,25 @@ def load_actions(path: Path) -> dict[str, Action]:
         interactive = definition.get("interactive", False)
         if not isinstance(interactive, bool):
             raise ValueError(f"action {name!r} has a non-boolean interactive flag")
+        aliases = definition.get("aliases", [])
+        if (not isinstance(aliases, list) or
+                any(not isinstance(alias, str) or not alias.strip()
+                    for alias in aliases)):
+            raise ValueError(f"action {name!r} has invalid aliases")
+        for phrase in (name, *(alias.strip() for alias in aliases)):
+            normalized = _normalize_action_name(phrase)
+            if not normalized:
+                raise ValueError(f"action {name!r} has an unusable name or alias")
+            other_name = seen_phrases.get(normalized)
+            if other_name is not None:
+                raise ValueError(
+                    f"action name or alias {phrase!r} conflicts with "
+                    f"action {other_name!r}"
+                )
+            seen_phrases[normalized] = name
         actions[name.casefold()] = Action(
-            tuple(command), cwd, description, interactive
+            tuple(command), cwd, description, interactive,
+            tuple(alias.strip() for alias in aliases),
         )
     return actions
 
@@ -153,24 +213,48 @@ class VoiceCommandRouter:
             return None
 
         intent = parse_intent(transcript)
-        if intent.target == "action":
+        action_request = (
+            intent.content if intent.target == "action"
+            else _spoken_action_request(transcript)
+            if intent.target == "dictation" else None
+        )
+        if action_request is not None:
             try:
                 self.actions = load_actions(self.actions_path)
             except ValueError as error:
                 print(f"Could not reload voice actions: {error}", file=sys.stderr)
                 return None
+            matched_name = self._match_action_name(action_request)
+            if matched_name is not None:
+                intent = Intent("action", matched_name)
+            elif intent.target == "action":
+                intent = Intent("action", action_request)
         if intent.target == "action" and intent.content:
             action = self.actions.get(intent.content.casefold())
             if action is not None and action.interactive:
                 self._start_confirmed_interactive_action(intent.content)
                 return None
-        return self.handle(transcript)
+        return self._handle_intent(intent)
 
     def handle(self, transcript: str) -> Optional[str]:
         """Return dictation text, or route a prefixed command and return None."""
         if self._forward_to_active_prompt(transcript):
             return None
         intent = parse_intent(transcript)
+        action_request = (
+            intent.content if intent.target == "action"
+            else _spoken_action_request(transcript)
+            if intent.target == "dictation" else None
+        )
+        if action_request is not None:
+            matched_name = self._match_action_name(action_request)
+            if matched_name is not None:
+                intent = Intent("action", matched_name)
+            elif intent.target == "action":
+                intent = Intent("action", action_request)
+        return self._handle_intent(intent)
+
+    def _handle_intent(self, intent: Intent) -> Optional[str]:
         if intent.target == "dictation":
             return intent.content
         if intent.target == "pending":
@@ -189,6 +273,47 @@ class VoiceCommandRouter:
         elif intent.target == "action":
             self._run_action(intent.content)
         return None
+
+    def _match_action_name(self, spoken_name: str) -> Optional[str]:
+        normalized = _normalize_action_name(spoken_name)
+        if not normalized:
+            return None
+        candidates_by_action = {
+            name: (name, *action.aliases)
+            for name, action in self.actions.items()
+        }
+        for name, phrases in candidates_by_action.items():
+            if any(_normalize_action_name(phrase) == normalized
+                   for phrase in phrases):
+                return name
+
+        if len(normalized) < 6:
+            return None
+        candidates = [
+            (
+                SequenceMatcher(
+                    None, normalized, _normalize_action_name(phrase)
+                ).ratio(),
+                name,
+            )
+            for name, phrases in candidates_by_action.items()
+            for phrase in phrases
+            if len(_normalize_action_name(phrase)) >= 6
+            and len(normalized) <= len(_normalize_action_name(phrase)) * 1.25
+        ]
+        candidates.sort(reverse=True)
+        best_by_action: dict[str, float] = {}
+        for score, name in candidates:
+            best_by_action[name] = max(score, best_by_action.get(name, 0.0))
+        candidates = sorted(
+            ((score, name) for name, score in best_by_action.items()),
+            reverse=True,
+        )
+        if not candidates or candidates[0][0] < 0.84:
+            return None
+        if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.08:
+            return None
+        return candidates[0][1]
 
     def _forward_to_active_prompt(self, transcript: str) -> bool:
         with self._interactive_lock:
@@ -390,18 +515,23 @@ class VoiceCommandRouter:
         ]
         print("Starting OpenCode CLI. Review and approve any tool permissions it requests.")
         try:
+            options = _agent_cli_options()
+            options["stderr"] = subprocess.PIPE
+            options["text"] = True
             result = subprocess.run(
                 command,
                 cwd=self.opencode_cwd or Path.cwd(),
                 timeout=self.timeout,
                 check=False,
-                **_agent_cli_options(),
+                **options,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError(f"Could not run OpenCode: {error}") from error
         if result.returncode != 0:
+            detail = (result.stderr or "").strip()
+            suffix = f": {detail}" if detail else ""
             raise RuntimeError(
-                f"OpenCode CLI failed with exit code {result.returncode}"
+                f"OpenCode CLI failed with exit code {result.returncode}{suffix}"
             )
 
     def _send_to_claude(self, prompt: str) -> None:
@@ -473,7 +603,8 @@ class VoiceCommandRouter:
         *,
         session_dir: Path | None = None,
     ) -> None:
-        action = self.actions.get(name.casefold())
+        matched_name = self._match_action_name(name)
+        action = self.actions.get(matched_name) if matched_name else None
         if action is None:
             available = ", ".join(sorted(self.actions)) or "(none configured)"
             print(f"Unknown action {name!r}. Available actions: {available}")
@@ -554,6 +685,7 @@ class VoiceCommandRouter:
                     command,
                     cwd=cwd,
                     env=environment,
+                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                 )
             except OSError:
                 if owns_session:
