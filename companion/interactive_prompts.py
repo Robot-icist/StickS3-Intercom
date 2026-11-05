@@ -231,7 +231,7 @@ def prompt_choice(
 
         tk.Label(
             card,
-            text="Left/Right or voice selects | Front/Enter accepts | Back/Esc cancels",
+            text="Left/Right or voice selects | Back/Enter accepts | Front/Esc cancels",
             font=("Segoe UI", 9),
             foreground="#94a3b8",
             background="#101827",

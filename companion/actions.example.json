@@ -61,10 +61,11 @@
     "ota update": {
       "command": [
         "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",
-        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\companion\\ota_deploy.py"
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\companion\\ota_deploy.py",
+        "--restart-companion"
       ],
       "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
-      "description": "Build firmware and/or LittleFS, then upload over authenticated Wi-Fi OTA",
+      "description": "Build firmware and/or LittleFS, then upload over authenticated Wi-Fi OTA, then restart companion",
       "interactive": true
     },
     "list bluetooth devices": {

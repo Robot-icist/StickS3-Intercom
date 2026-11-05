@@ -197,6 +197,23 @@ class VoiceCommandRouterTests(unittest.TestCase):
 
             run_action.assert_called_once_with("git status")
 
+    def test_spaced_acronyms_match_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "ota update": {"command": ["ota_deploy.py"]}
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with patch.object(router, "_run_action") as run_action:
+                router.route("run O T A update")
+
+            run_action.assert_called_once_with("ota update")
+
     def test_unmatched_contextual_speech_remains_dictation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             config = Path(temporary) / "actions.json"
@@ -390,7 +407,10 @@ class VoiceCommandRouterTests(unittest.TestCase):
 
     def test_opencode_uses_selected_session_and_cli_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project"
+            project.mkdir()
             router = self.make_router(Path(temporary) / "missing.json")
+            router.opencode_cwd = project
             with (
                 patch("builtins.input", side_effect=("1", "yes")),
                 patch(
@@ -434,11 +454,65 @@ class VoiceCommandRouterTests(unittest.TestCase):
             self.assertNotIn(
                 "--auto", run.call_args_list[1].args[0]
             )
+            self.assertEqual(run.call_args_list[0].kwargs["cwd"], project)
             self.assertEqual(run.call_args_list[1].kwargs["cwd"], Path(temporary))
             self.assertEqual(run.call_args_list[1].kwargs["stderr"], subprocess.PIPE)
             self.assertTrue(run.call_args_list[1].kwargs["text"])
 
-    def test_opencode_failure_includes_cli_stderr(self) -> None:
+    def test_opencode_can_create_new_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project"
+            project.mkdir()
+            router = self.make_router(Path(temporary) / "missing.json")
+            router.opencode_cwd = project
+            with (
+                patch("builtins.input", side_effect=("1", "yes")),
+                patch(
+                    "voice_actions.shutil.which",
+                    return_value="opencode.cmd",
+                ),
+                patch(
+                    "voice_actions.subprocess.run",
+                    side_effect=(
+                        subprocess.CompletedProcess(
+                            [], 0, stdout=json.dumps([]),
+                            stderr="",
+                        ),
+                        subprocess.CompletedProcess(
+                            [], 0,
+                            stdout=json.dumps({
+                                "id": "new-session-123",
+                                "title": "New Session",
+                                "directory": temporary,
+                            }),
+                            stderr="",
+                        ),
+                    ),
+                ) as run,
+            ):
+                router.handle("OpenCode: summarize this project")
+
+            self.assertEqual(router.opencode_session, "new-session-123")
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "opencode.cmd",
+                "session",
+                "list",
+                "--format",
+                "json",
+            ])
+            self.assertEqual(run.call_args_list[1].args[0], [
+                "opencode.cmd",
+                "run",
+                "summarize this project",
+            ])
+            self.assertNotIn(
+                "--auto", run.call_args_list[1].args[0]
+            )
+            self.assertNotIn(
+                "--session", run.call_args_list[1].args[0]
+            )
+
+    def test_opencode_failure_includes_cli_stdout_and_stderr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             router = self.make_router(Path(temporary) / "missing.json")
             router.opencode_session = "session-1"
@@ -448,12 +522,17 @@ class VoiceCommandRouterTests(unittest.TestCase):
                 patch(
                     "voice_actions.subprocess.run",
                     return_value=subprocess.CompletedProcess(
-                        [], 1, stdout="", stderr="Provider authentication failed"
+                        [],
+                        1,
+                        stdout="Model request failed",
+                        stderr="Provider authentication failed",
                     ),
                 ),
             ):
                 with self.assertRaisesRegex(
-                    RuntimeError, "exit code 1: Provider authentication failed"
+                    RuntimeError,
+                    "exit code 1: Model request failed\n"
+                    "Provider authentication failed",
                 ):
                     router.handle("OpenCode: summarize this project")
 
@@ -511,7 +590,9 @@ class VoiceCommandRouterTests(unittest.TestCase):
 
         self.assertEqual(router.opencode_session, "session-1")
         self.assertEqual(choose.call_count, 2)
-        self.assertIn("Project", choose.call_args_list[0].args[2][0])
+        choices = choose.call_args_list[0].args[2]
+        self.assertIn("Project", choices[0])
+        self.assertEqual(choices[-1], "Create new session")
         self.assertIn("creationflags", run.call_args_list[1].kwargs)
 
     def test_claude_invocation_uses_argv_and_optional_resume(self) -> None:

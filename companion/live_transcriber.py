@@ -964,6 +964,19 @@ def main() -> None:
         help="OpenCode session ID; if omitted, select a session interactively",
     )
     parser.add_argument(
+        "--opencode-cwd",
+        type=Path,
+        default=(
+            Path(os.environ["OPENCODE_WORKING_DIRECTORY"])
+            if os.environ.get("OPENCODE_WORKING_DIRECTORY")
+            else None
+        ),
+        help=(
+            "project directory used to list OpenCode sessions "
+            "(default: OPENCODE_WORKING_DIRECTORY or current directory)"
+        ),
+    )
+    parser.add_argument(
         "--claude-command",
         default=os.environ.get("CLAUDE_CODE_COMMAND", "claude"),
         help="Claude Code CLI command (default: CLAUDE_CODE_COMMAND or claude)",
@@ -1013,6 +1026,7 @@ def main() -> None:
             voice_router = VoiceCommandRouter(
                 opencode_command=args.opencode_command,
                 opencode_session=args.opencode_session,
+                opencode_cwd=args.opencode_cwd,
                 claude_command=args.claude_command,
                 claude_session=args.claude_session,
                 claude_cwd=args.claude_cwd,

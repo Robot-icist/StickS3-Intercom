@@ -801,7 +801,8 @@ namespace controller
 
     if (fabsf(gyroX) >= kGesturePitchDps)
     {
-      const uint8_t key = gyroX > 0.0f ? kKeyEnter : kKeyEscape;
+      // Inverted: front (tilt away, gyroX > 0) = cancel, back (tilt toward, gyroX < 0) = accept
+      const uint8_t key = gyroX > 0.0f ? kKeyEscape : kKeyEnter;
       _hid.sendKey(key);
       Serial.printf("[gesture] front/back -> %s\n",
                     key == kKeyEnter ? "accept" : "cancel");
@@ -826,11 +827,12 @@ namespace controller
   {
     if (_mode == Mode::Navigation)
     {
-      const uint8_t key = doubleClick ? kKeyEscape : kKeyEnter;
+      // Inverted: single click = cancel (Escape), double click = accept (Enter)
+      const uint8_t key = doubleClick ? kKeyEnter : kKeyEscape;
       _hid.sendKey(key);
       Serial.printf("[controller] navigation %s -> %s\n",
                     doubleClick ? "double-click" : "click",
-                    doubleClick ? "Escape" : "Enter");
+                    doubleClick ? "Enter" : "Escape");
       return;
     }
 

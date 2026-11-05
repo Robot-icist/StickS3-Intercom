@@ -552,6 +552,8 @@ def start_transcriber(
         str(os.getpid()),
         *args.transcribe_arg,
     ]
+    if args.opencode_cwd is not None:
+        transcriber_args.extend(("--opencode-cwd", str(args.opencode_cwd)))
     if getattr(sys, "frozen", False):
         command = [
             sys.executable,
@@ -673,6 +675,12 @@ def main() -> None:
             "with an equals sign, for example --transcribe-arg=--modes "
             "--transcribe-arg=live"
         ),
+    )
+    parser.add_argument(
+        "--opencode-cwd",
+        type=Path,
+        default=None,
+        help="working directory for OpenCode CLI (default: current directory)",
     )
     args = parser.parse_args()
     if args.receiver_only and (args.transcribe or args.voice_commands):

@@ -18,6 +18,56 @@ from ota_ble import OtaDevice, OtaDiscoveryError, discover_ota_devices
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _kill_companion_processes() -> None:
+    """Kill any running StickS3Companion processes (exe or python launcher)."""
+    killed = False
+    if os.name == "nt":
+        # Kill the packaged executable
+        for proc_name in ["StickS3Companion.exe", "StickS3Companion"]:
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/F", "/IM", proc_name],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print(f"[OTA] Killed existing {proc_name} process(es).", flush=True)
+                    killed = True
+            except OSError:
+                pass
+    else:
+        # On Linux/macOS, use pkill
+        for proc_name in ["StickS3Companion"]:
+            try:
+                result = subprocess.run(
+                    ["pkill", "-f", proc_name],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print(f"[OTA] Killed existing {proc_name} process(es).", flush=True)
+                    killed = True
+            except OSError:
+                pass
+
+    # Also kill any python processes running launcher.py or live_transcriber.py
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import psutil; [p.kill() for p in psutil.process_iter() if 'launcher.py' in ' '.join(p.cmdline()) or 'live_transcriber.py' in ' '.join(p.cmdline())]"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            print("[OTA] Killed existing companion Python processes.", flush=True)
+            killed = True
+    except (OSError, subprocess.TimeoutExpired, ImportError):
+        pass
+
+    if not killed:
+        print("[OTA] No existing companion processes found.", flush=True)
+
+
 @dataclass(frozen=True)
 class Target:
     name: str
@@ -208,10 +258,42 @@ def _parse_args() -> argparse.Namespace:
         choices=("firmware", "filesystem", "both"),
         help="select the image directly; otherwise show the image popup",
     )
+    parser.add_argument(
+        "--restart-companion",
+        action="store_true",
+        help="restart the StickS3Companion app after OTA update completes",
+    )
     return parser.parse_args()
 
 
+def _restart_companion() -> bool:
+    """Restart the StickS3Companion app from source or packaged executable."""
+    print("[OTA] Restarting companion app...", flush=True)
+    # Try packaged executable first
+    exe_path = ROOT / "dist" / "StickS3Companion" / "StickS3Companion.exe"
+    if exe_path.is_file():
+        try:
+            subprocess.Popen([str(exe_path)], cwd=str(ROOT))
+            print(f"[OTA] Started {exe_path}", flush=True)
+            return True
+        except OSError as e:
+            print(f"[OTA] Failed to start packaged app: {e}", flush=True)
+    # Fall back to running from source
+    python = Path(sys.executable)
+    launcher = ROOT / "companion" / "launcher.py"
+    if launcher.is_file():
+        try:
+            subprocess.Popen([str(python), "-u", str(launcher)], cwd=str(ROOT))
+            print(f"[OTA] Started companion from source: {launcher}", flush=True)
+            return True
+        except OSError as e:
+            print(f"[OTA] Failed to start from source: {e}", flush=True)
+    print("[OTA] Could not find companion app to restart.", flush=True)
+    return False
+
+
 def main() -> bool:
+    _kill_companion_processes()
     args = _parse_args()
     target = _choose_target(args.environment)
     if target is None:
@@ -278,6 +360,8 @@ def main() -> bool:
         )
 
     print(f"\nOTA update completed for {target.name} at {device.host}.")
+    if args.restart_companion:
+        _restart_companion()
     return True
 
 

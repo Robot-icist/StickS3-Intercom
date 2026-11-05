@@ -43,6 +43,23 @@ def recordings_path() -> Path:
     return default_actions_path().parent / "recordings"
 
 
+def opencode_working_directory() -> Path:
+    configured = os.environ.get("OPENCODE_WORKING_DIRECTORY")
+    if configured:
+        return Path(configured).expanduser()
+
+    starts = (
+        Path.cwd(),
+        Path(__file__).resolve().parent,
+        Path(sys.executable).resolve().parent,
+    )
+    for start in starts:
+        for candidate in (start, *start.parents):
+            if (candidate / "platformio.ini").is_file():
+                return candidate
+    return Path.home()
+
+
 def load_action_definitions(path: Path) -> dict[str, dict[str, object]]:
     try:
         configuration = json.loads(path.read_text(encoding="utf-8"))
@@ -80,7 +97,9 @@ def save_action_definitions(
         raise ValueError(f"Cannot save actions to {path}: {error}") from error
 
 
-def _receiver_command(output_dir: Path) -> list[str]:
+def _receiver_command(
+    output_dir: Path, opencode_cwd: Path | None = None
+) -> list[str]:
     arguments = [
         "--transcribe",
         "--voice-commands",
@@ -88,6 +107,8 @@ def _receiver_command(output_dir: Path) -> list[str]:
         "--output",
         str(output_dir),
     ]
+    if opencode_cwd is not None:
+        arguments.extend(("--opencode-cwd", str(opencode_cwd)))
     if getattr(sys, "frozen", False):
         return [sys.executable, "--internal-receiver", *arguments]
     receiver = Path(__file__).resolve().with_name("launcher.py")
@@ -576,7 +597,9 @@ class CompanionApp:
     def start_receiver(self) -> None:
         if self.process is not None and self.process.poll() is None:
             return
-        command = _receiver_command(self.output_dir)
+        command = _receiver_command(
+            self.output_dir, opencode_working_directory()
+        )
         environment = os.environ.copy()
         environment["PYTHONUNBUFFERED"] = "1"
         environment["STICKS3_INTERACTION_DIR"] = str(

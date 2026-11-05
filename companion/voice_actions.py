@@ -65,12 +65,19 @@ def _fold_text(text: str) -> str:
 
 
 def _normalize_action_name(name: str) -> str:
-    return "".join(character for character in _fold_text(name) if character.isalnum())
+    folded = _fold_text(name)
+    # Collapse spaced-out acronyms: "O T A" -> "OTA", "C I" -> "CI"
+    folded = re.sub(r"\b([a-z])\s+([a-z])\s+(?=[a-z])", r"\1\2", folded)
+    folded = re.sub(r"\b([a-z])\s+([a-z])\b", r"\1\2", folded)
+    return "".join(character for character in folded if character.isalnum())
 
 
 def _spoken_action_request(transcript: str) -> Optional[str]:
     folded = re.sub(r"[-_]+", " ", _fold_text(transcript.strip()))
     folded = folded.replace("«", " ").replace("»", " ")
+    # Collapse spaced-out acronyms: "O T A update" -> "OTA update"
+    folded = re.sub(r"\b([a-z])\s+([a-z])\s+(?=[a-z])", r"\1\2", folded)
+    folded = re.sub(r"\b([a-z])\s+([a-z])\b", r"\1\2", folded)
     match = _SPOKEN_ACTION.match(folded)
     return match.group(1).strip(" \t,.;:!?") if match is not None else None
 
@@ -183,6 +190,7 @@ class VoiceCommandRouter:
         *,
         opencode_command: str,
         opencode_session: Optional[str],
+        opencode_cwd: Optional[Path] = None,
         claude_command: str,
         claude_session: Optional[str],
         claude_cwd: Optional[Path],
@@ -193,7 +201,7 @@ class VoiceCommandRouter:
     ) -> None:
         self.opencode_command = opencode_command
         self.opencode_session = opencode_session
-        self.opencode_cwd: Optional[Path] = None
+        self.opencode_cwd = opencode_cwd
         self.claude_command = claude_command
         self.claude_session = claude_session
         self.claude_cwd = claude_cwd
@@ -414,7 +422,7 @@ class VoiceCommandRouter:
         try:
             result = subprocess.run(
                 [executable, "session", "list", "--format", "json"],
-                cwd=Path.cwd(),
+                cwd=self.opencode_cwd or Path.cwd(),
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -434,49 +442,54 @@ class VoiceCommandRouter:
             raise RuntimeError("OpenCode returned an invalid session list") from error
         if not isinstance(sessions, list):
             raise RuntimeError("OpenCode returned an invalid session list")
-        if not sessions:
-            raise RuntimeError(
-                "OpenCode has no sessions; open a project/session first"
-            )
+
+        valid_sessions = [
+            session for session in sessions
+            if isinstance(session, dict) and isinstance(session.get("id"), str)
+        ]
+
         print("\nOpenCode sessions:")
-        for index, session in enumerate(sessions, start=1):
-            if not isinstance(session, dict):
-                continue
-            session_id = session.get("id")
-            title = session.get("title") or "(untitled)"
-            directory = session.get("directory") or ""
-            if isinstance(session_id, str):
+        if valid_sessions:
+            for index, session in enumerate(valid_sessions, start=1):
+                session_id = session.get("id")
+                title = session.get("title") or "(untitled)"
+                directory = session.get("directory") or ""
                 print(f"  {index}. {title}  [{directory}]  {session_id}")
+        else:
+            print("  (no existing sessions)")
+
+        # Add "Create new session" as an option
+        new_session_option = len(valid_sessions) + 1
+        print(f"  {new_session_option}. Create new session")
+
         interaction_dir = os.environ.get("STICKS3_INTERACTION_DIR")
         if interaction_dir:
-            valid_sessions = [
-                session for session in sessions
-                if isinstance(session, dict) and isinstance(session.get("id"), str)
-            ]
-            if not valid_sessions:
-                raise RuntimeError("OpenCode returned no selectable sessions")
             choices = tuple(
                 f"{session.get('title') or '(untitled)'} — "
                 f"{session.get('directory') or ''}"
                 for session in valid_sessions
-            )
+            ) + ("Create new session",)
             aliases = tuple(
                 str(session.get("title") or f"session {index + 1}")
                 for index, session in enumerate(valid_sessions)
-            )
+            ) + ("new session",)
             selected_index = prompt_choice(
                 "Choose OpenCode session",
-                "Select the session that should receive this voice command.",
+                "Select the session that should receive this voice command, or create a new one.",
                 choices,
                 voice_aliases=aliases,
                 session_dir=Path(interaction_dir),
             )
             if selected_index is None:
                 return ""
+            if selected_index == new_session_option - 1:
+                return "__new__"
             selected = valid_sessions[selected_index]
         else:
             try:
-                selection = input("Session number (blank cancels): ").strip()
+                selection = input(
+                    f"Session number (1-{new_session_option}, blank cancels): "
+                ).strip()
             except (EOFError, OSError):
                 return ""
             if not selection:
@@ -485,7 +498,9 @@ class VoiceCommandRouter:
                 selection_index = int(selection) - 1
                 if selection_index < 0:
                     raise IndexError
-                selected = sessions[selection_index]
+                if selection_index == new_session_option - 1:
+                    return "__new__"
+                selected = valid_sessions[selection_index]
             except (ValueError, IndexError):
                 print("Invalid OpenCode session selection.")
                 return ""
@@ -504,16 +519,27 @@ class VoiceCommandRouter:
         if not session_id:
             print("OpenCode command cancelled.")
             return
-        if not self._confirm(f"OpenCode session {session_id}", prompt):
-            return
-        command = [
-            self._opencode_cli(),
-            "run",
-            "--session",
-            session_id,
-            prompt,
-        ]
-        print("Starting OpenCode CLI. Review and approve any tool permissions it requests.")
+        if session_id == "__new__":
+            session_display = "new session"
+            if not self._confirm(f"OpenCode {session_display}", prompt):
+                return
+            command = [
+                self._opencode_cli(),
+                "run",
+                prompt,
+            ]
+        else:
+            session_display = f"session {session_id}"
+            if not self._confirm(f"OpenCode {session_display}", prompt):
+                return
+            command = [
+                self._opencode_cli(),
+                "run",
+                "--session",
+                session_id,
+                prompt,
+            ]
+        print(f"Starting OpenCode CLI ({session_display}). Review and approve any tool permissions it requests.")
         try:
             options = _agent_cli_options()
             options["stderr"] = subprocess.PIPE
@@ -528,11 +554,27 @@ class VoiceCommandRouter:
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError(f"Could not run OpenCode: {error}") from error
         if result.returncode != 0:
-            detail = (result.stderr or "").strip()
+            detail = "\n".join(
+                output.strip()
+                for output in (result.stdout, result.stderr)
+                if output and output.strip()
+            )
             suffix = f": {detail}" if detail else ""
             raise RuntimeError(
                 f"OpenCode CLI failed with exit code {result.returncode}{suffix}"
             )
+        # If we created a new session, capture its ID for future use
+        if session_id == "__new__" and result.stdout:
+            try:
+                # opencode run outputs the session ID when creating a new session
+                output_data = json.loads(result.stdout.strip())
+                if isinstance(output_data, dict) and isinstance(output_data.get("id"), str):
+                    self.opencode_session = output_data["id"]
+                    directory = output_data.get("directory")
+                    if isinstance(directory, str) and directory:
+                        self.opencode_cwd = Path(directory)
+            except (json.JSONDecodeError, AttributeError):
+                pass
 
     def _send_to_claude(self, prompt: str) -> None:
         executable = shutil.which(self.claude_command)

@@ -2,7 +2,59 @@
 
 import subprocess
 import os
+import sys
 from pathlib import Path
+
+
+def _kill_companion_processes():
+    """Kill any running StickS3Companion processes (exe or python launcher)."""
+    killed = False
+    if os.name == "nt":
+        # Kill the packaged executable
+        for proc_name in ["StickS3Companion.exe", "StickS3Companion"]:
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/F", "/IM", proc_name],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print(f"[Companion] Killed existing {proc_name} process(es).", flush=True)
+                    killed = True
+            except OSError:
+                pass
+    else:
+        # On Linux/macOS, use pkill
+        for proc_name in ["StickS3Companion"]:
+            try:
+                result = subprocess.run(
+                    ["pkill", "-f", proc_name],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print(f"[Companion] Killed existing {proc_name} process(es).", flush=True)
+                    killed = True
+            except OSError:
+                pass
+
+    # Also kill any python processes running launcher.py or live_transcriber.py
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import psutil; [p.kill() for p in psutil.process_iter() if 'launcher.py' in ' '.join(p.cmdline()) or 'live_transcriber.py' in ' '.join(p.cmdline())]"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            print("[Companion] Killed existing companion Python processes.", flush=True)
+            killed = True
+    except (OSError, subprocess.TimeoutExpired, ImportError):
+        # psutil not available or other error, try alternative
+        pass
+
+    if not killed:
+        print("[Companion] No existing companion processes found.", flush=True)
 
 
 def _companion_python():
@@ -54,6 +106,7 @@ def _deploy_action(component=None, environment=None):
 
 
 def _companion_tests_action(source, target, env):
+    _kill_companion_processes()
     command = [
         str(_companion_python()),
         "-m",
@@ -69,6 +122,7 @@ def _companion_tests_action(source, target, env):
 
 
 def _companion_build_action(source, target, env):
+    _kill_companion_processes()
     if os.name != "nt":
         raise RuntimeError("The Windows companion build requires Windows.")
     script = ROOT / "companion" / "build_windows.ps1"
@@ -85,6 +139,7 @@ def _companion_build_action(source, target, env):
 
 
 def _companion_run_action(source, target, env):
+    _kill_companion_processes()
     executable = ROOT / "dist" / "StickS3Companion" / "StickS3Companion.exe"
     if not executable.is_file():
         raise RuntimeError(
@@ -96,6 +151,7 @@ def _companion_run_action(source, target, env):
 
 
 def _companion_source_action(source, target, env):
+    _kill_companion_processes()
     command = [str(_companion_python()), "-u", "companion/launcher.py"]
     print("[Companion] Starting the desktop app from source...", flush=True)
     return subprocess.call(command, cwd=str(ROOT))

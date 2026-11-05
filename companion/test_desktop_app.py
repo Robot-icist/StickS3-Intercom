@@ -6,6 +6,7 @@ from unittest.mock import patch
 from desktop_app import (
     _receiver_command,
     load_action_definitions,
+    opencode_working_directory,
     save_action_definitions,
 )
 
@@ -45,13 +46,15 @@ class DesktopActionConfigTests(unittest.TestCase):
 
     def test_receiver_default_enables_live_voice_command_routing(self) -> None:
         output = Path("recordings")
-        command = _receiver_command(output)
+        command = _receiver_command(output, opencode_cwd=Path("cwd"))
 
         self.assertIn("--transcribe", command)
         self.assertIn("--voice-commands", command)
         self.assertIn("--transcribe-arg=--partial-live", command)
         self.assertIn("--output", command)
         self.assertEqual(command[command.index("--output") + 1], str(output))
+        self.assertIn("--opencode-cwd", command)
+        self.assertEqual(command[command.index("--opencode-cwd") + 1], "cwd")
 
     def test_frozen_receiver_starts_as_a_separate_companion_process(self) -> None:
         with (
@@ -61,6 +64,16 @@ class DesktopActionConfigTests(unittest.TestCase):
             command = _receiver_command(Path("recordings"))
 
         self.assertEqual(command[:2], ["StickS3Companion.exe", "--internal-receiver"])
+
+    def test_opencode_working_directory_can_be_configured(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"OPENCODE_WORKING_DIRECTORY": "~/opencode-project"},
+        ):
+            self.assertEqual(
+                opencode_working_directory(),
+                Path.home() / "opencode-project",
+            )
 
 
 if __name__ == "__main__":
