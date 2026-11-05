@@ -18,8 +18,10 @@ constexpr uint32_t kI2cFrequency = 400000;
 constexpr uint8_t kJoystickProbeAttempts = 12;
 constexpr uint32_t kJoystickProbeDelayMs = 100;
 constexpr uint32_t kInputIntervalMs = 20;
+constexpr uint32_t kBatteryIntervalMs = 5000;
 constexpr uint32_t kModeHoldMs = 900;
 constexpr uint32_t kClickMaxMs = 600;
+constexpr uint32_t kButtonHoldMs = 700;
 constexpr uint32_t kDoubleClickWindowMs = 350;
 constexpr uint32_t kGestureCooldownMs = 800;
 constexpr float kGestureRearmDps = 100.0f;
@@ -140,6 +142,7 @@ bool ControllerFeatures::begin() {
 }
 
 void ControllerFeatures::update(uint32_t now) {
+  updateBattery(now);
   updateButtons(now);
 
   if (now - _lastJoystickAt >= kInputIntervalMs) {
@@ -151,6 +154,19 @@ void ControllerFeatures::update(uint32_t now) {
     updateImu(now);
     _lastImuAt = now;
   }
+}
+
+void ControllerFeatures::updateBattery(uint32_t now) {
+  if (now - _lastBatteryAt < kBatteryIntervalMs) {
+    return;
+  }
+  _lastBatteryAt = now;
+
+  // M5Unified knows the StickS3's M5PM1 PMIC and reports 0..100, or a negative
+  // value when the battery is not readable (for example on USB with no cell).
+  const int32_t level = M5.Power.getBatteryLevel();
+  _batteryLevel =
+      (level >= 0 && level <= 100) ? static_cast<int8_t>(level) : -1;
 }
 
 ControllerViewState ControllerFeatures::viewState(bool connected) const {
@@ -167,6 +183,7 @@ ControllerViewState ControllerFeatures::viewState(bool connected) const {
   state.flipX = _mode == Mode::Orientation ? _pendingFlipX : _flipX;
   state.flipY = _mode == Mode::Orientation ? _pendingFlipY : _flipY;
   state.dpiLevel = _dpiLevel;
+  state.batteryLevel = _batteryLevel;
   state.joystickError = _joystickError;
   state.pendingBaseRotation = _pendingBaseRotation;
   state.roll = _roll;
@@ -253,11 +270,18 @@ bool ControllerFeatures::saveMode(Mode mode) {
   return true;
 }
 
-void ControllerFeatures::cycleMode() {
+void ControllerFeatures::applyMode(Mode mode) {
+  if (mode == _mode) {
+    return;
+  }
   if (_mode == Mode::Microphone) {
     _micAudio.cancel();
+  } else {
+    // Remember where to return when the next quick switch leaves the mic.
+    _micReturnMode = _mode;
   }
-  _mode = static_cast<Mode>((static_cast<uint8_t>(_mode) + 1) % 5);
+
+  _mode = mode;
   _havePendingJoystickClick = false;
   if (_mode == Mode::Orientation) {
     _pendingBaseRotation = _baseRotation;
@@ -285,6 +309,17 @@ void ControllerFeatures::cycleMode() {
                 modeNames[static_cast<uint8_t>(_mode)]);
 }
 
+void ControllerFeatures::cycleMode() {
+  applyMode(static_cast<Mode>((static_cast<uint8_t>(_mode) + 1) % 5));
+}
+
+void ControllerFeatures::toggleMicrophoneMode() {
+  const bool enterMic = _mode != Mode::Microphone;
+  applyMode(enterMic ? Mode::Microphone : _micReturnMode);
+  Serial.printf("[controller] quick switch: %s\n",
+                enterMic ? "microphone" : "previous mode");
+}
+
 void ControllerFeatures::toggleJoystickFlip(bool flipX) {
   bool& flip = flipX ? _pendingFlipX : _pendingFlipY;
   flip = !flip;
@@ -301,6 +336,7 @@ void ControllerFeatures::updateButtons(uint32_t now) {
   if (buttonA && !_previousButtonA) {
     _buttonAStartedAt = now;
     _buttonASuppressed = false;
+    _buttonALongHandled = false;
   }
   if (buttonB && !_previousButtonB) {
     _buttonBStartedAt = now;
@@ -312,6 +348,23 @@ void ControllerFeatures::updateButtons(uint32_t now) {
       _comboActive = true;
       _buttonASuppressed = true;
       _buttonBSuppressed = true;
+    }
+  }
+
+  // Hold BtnA to jump between Microphone and the previous mode. The joystick
+  // hold still cycles through every mode in order. Don't leave the mic while a
+  // clip is recording or being sent, so a long press cannot discard it.
+  if (buttonA && !_buttonALongHandled && !_comboActive &&
+      now - _buttonAStartedAt >= kButtonHoldMs) {
+    _buttonALongHandled = true;
+    _buttonASuppressed = true;
+    const MicAudioStatus micStatus = _micAudio.status();
+    const bool micBusy =
+        _mode == Mode::Microphone &&
+        (micStatus == MicAudioStatus::Recording ||
+         micStatus == MicAudioStatus::Sending);
+    if (!micBusy) {
+      toggleMicrophoneMode();
     }
   }
 

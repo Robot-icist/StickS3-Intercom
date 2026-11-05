@@ -39,8 +39,11 @@ class ControllerFeatures {
   bool saveOrientationSettings();
   bool saveDpiLevel();
   bool saveMode(Mode mode);
+  void applyMode(Mode mode);
   void cycleMode();
+  void toggleMicrophoneMode();
   void toggleJoystickFlip(bool flipX);
+  void updateBattery(uint32_t now);
   void updateButtons(uint32_t now);
   void updateJoystick(uint32_t now);
   void updateImu(uint32_t now);
@@ -51,6 +54,7 @@ class ControllerFeatures {
   BleMicAudio& _micAudio;
   const char* _errorMessage = "CONTROLLER INIT FAILED";
   Mode _mode = Mode::Mouse;
+  Mode _micReturnMode = Mode::Mouse;
   bool _orientationSaved = true;
   bool _dpiSaved = true;
   bool _orientationStickCentered = true;
@@ -60,6 +64,7 @@ class ControllerFeatures {
   bool _previousButtonB = false;
   bool _buttonASuppressed = false;
   bool _buttonBSuppressed = false;
+  bool _buttonALongHandled = false;
   bool _comboActive = false;
   bool _lastJoystickButton = false;
   bool _haveMouseReport = false;
@@ -74,6 +79,7 @@ class ControllerFeatures {
   bool _pendingFlipY = false;
   uint8_t _joystickErrorCount = 0;
   uint8_t _dpiLevel = 3;
+  int8_t _batteryLevel = -1;
   uint8_t _baseRotation = 0;
   uint8_t _pendingBaseRotation = 0;
   float _roll = 0.0f;
@@ -87,6 +93,7 @@ class ControllerFeatures {
   uint32_t _lastJoystickAt = 0;
   uint32_t _lastDpiAdjustAt = 0;
   uint32_t _lastImuAt = 0;
+  uint32_t _lastBatteryAt = 0;
   uint32_t _lastJoystickLogAt = 0;
   uint32_t _lastGestureAt = 0;
   uint32_t _lastValidInputAt = 0;

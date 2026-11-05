@@ -21,6 +21,7 @@ struct ControllerViewState {
   bool flipX = false;
   bool flipY = false;
   uint8_t dpiLevel = 3;
+  int8_t batteryLevel = -1;
   bool joystickError = false;
   uint8_t pendingBaseRotation = 0;
   float roll = 0.0f;

@@ -17,6 +17,39 @@ constexpr uint16_t kColorWarning = 0xCDB2;
 constexpr uint16_t kColorError = 0xC986;
 constexpr float kRadToDeg = 57.2957795f;
 
+void drawBatteryStatus(LGFX_Sprite& screen, int8_t level, int32_t y) {
+  const int32_t right = screen.width() - 8;
+  char text[8];
+  uint16_t color = kColorPrimary;
+  if (level < 0) {
+    snprintf(text, sizeof(text), "USB");
+    color = kColorSecondary;
+  } else {
+    snprintf(text, sizeof(text), "%d%%", static_cast<int>(level));
+    color = level <= 20 ? kColorError : kColorPrimary;
+  }
+
+  screen.setFont(&fonts::Font0);
+  screen.setTextDatum(lgfx::textdatum_t::top_right);
+  screen.setTextColor(color, kColorBackground);
+  if (level < 0) {
+    screen.drawString(text, right, y);
+    return;
+  }
+
+  // Small battery outline with a proportional fill, followed by the level.
+  constexpr int32_t kIconWidth = 17;
+  constexpr int32_t kIconHeight = 9;
+  const int32_t iconX = right - kIconWidth - 2;
+  screen.drawString(text, iconX - 3, y);
+  screen.drawRect(iconX, y, kIconWidth, kIconHeight, color);
+  screen.fillRect(iconX + kIconWidth, y + 2, 2, kIconHeight - 4, color);
+  const int32_t fill = (kIconWidth - 4) * level / 100;
+  if (fill > 0) {
+    screen.fillRect(iconX + 2, y + 2, fill, kIconHeight - 4, color);
+  }
+}
+
 void drawClippedMarquee(LGFX_Sprite& screen, const char* text, int32_t x,
                         int32_t y, int32_t width, int32_t height,
                         uint16_t foreground, uint16_t background,
@@ -98,6 +131,7 @@ void ControllerUi::renderController(const ControllerViewState& state,
       !state.connected ? "PAIR" : state.hidReady ? "HID READY" : "HID WAIT";
   _screen.drawString(connectionStatus,
                      _screen.width() - 8, 12);
+  drawBatteryStatus(_screen, state.batteryLevel, 2);
   _screen.drawFastHLine(8, 34, _screen.width() - 16, kColorBorder);
 
   if (state.micMode) {
@@ -143,10 +177,13 @@ void ControllerUi::renderController(const ControllerViewState& state,
     drawClippedMarquee(_screen, "A: record / send clip", 8, 163,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "B: cancel | hold: next mode", 8, 181,
+    drawClippedMarquee(_screen, "B: cancel | hold A: back", 8, 181,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "Requires BLE audio companion", 8, 207,
+    drawClippedMarquee(_screen, "Stick hold: next mode", 8, 199,
+                       _screen.width() - 16, 12, kColorSecondary,
+                       kColorBackground, now);
+    drawClippedMarquee(_screen, "Requires BLE audio companion", 8, 217,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
     _screen.pushSprite(0, 0);
@@ -173,10 +210,10 @@ void ControllerUi::renderController(const ControllerViewState& state,
     drawClippedMarquee(_screen, "Stick L/R: slower / faster", 8, 173,
                        _screen.width() - 16, 12, kColorPrimary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "Click: save | hold: next", 8, 191,
+    drawClippedMarquee(_screen, "Click: save | stick hold: next", 8, 191,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
-    drawClippedMarquee(_screen, "A: copy  B: paste", 8, 209,
+    drawClippedMarquee(_screen, "A: copy  B: paste | hold A: mic", 8, 209,
                        _screen.width() - 16, 12, kColorSecondary,
                        kColorBackground, now);
     if (state.joystickError) {
@@ -219,10 +256,10 @@ void ControllerUi::renderController(const ControllerViewState& state,
   drawClippedMarquee(_screen, "Gesture L/R: NO | F/B: YES", 8, 162,
                      _screen.width() - 16, 12, kColorSecondary,
                      kColorBackground, now);
-  drawClippedMarquee(_screen, "Hold: mouse > nav > IMU > speed > mic", 8, 181,
-                     _screen.width() - 16, 12, kColorSecondary,
+  drawClippedMarquee(_screen, "Stick hold: mouse > nav > IMU > speed > mic", 8,
+                     181, _screen.width() - 16, 12, kColorSecondary,
                      kColorBackground, now);
-  drawClippedMarquee(_screen, "In IMU: A/B flip X/Y; click saves", 8, 198,
+  drawClippedMarquee(_screen, "Hold A: mic <-> last mode", 8, 198,
                      _screen.width() - 16, 12, kColorSecondary,
                      kColorBackground, now);
 
@@ -252,16 +289,24 @@ void ControllerUi::renderImuCube(const ControllerViewState& state) {
 
   _screen.fillScreen(kColorBackground);
   _screen.setTextColor(kColorPrimary, kColorBackground);
-  _screen.setTextDatum(lgfx::textdatum_t::top_center);
+  _screen.setTextDatum(lgfx::textdatum_t::top_left);
   _screen.setFont(&fonts::Font0);
-  _screen.drawString("IMU ORIENTATION", _screen.width() / 2, 8);
+  _screen.drawString("ORIENTATION", 8, 8);
+  drawBatteryStatus(_screen, state.batteryLevel, 8);
   char baseOrientation[32];
   snprintf(baseOrientation, sizeof(baseOrientation), "BASE %u DEG %s",
            static_cast<unsigned>(state.pendingBaseRotation * 90),
            state.orientationSaved ? "SAVED" : "UNSAVED");
+  _screen.setTextDatum(lgfx::textdatum_t::top_center);
   _screen.setTextColor(state.orientationSaved ? kColorSecondary : kColorWarning,
                        kColorBackground);
   _screen.drawString(baseOrientation, _screen.width() / 2, 20);
+
+  char orientation[40];
+  snprintf(orientation, sizeof(orientation), "R %.0f   P %.0f",
+           state.roll * kRadToDeg, state.pitch * kRadToDeg);
+  _screen.setTextColor(kColorPrimary, kColorBackground);
+  _screen.drawString(orientation, _screen.width() / 2, 31);
   _screen.drawRoundRect(8, 42, _screen.width() - 16, 158, 10, kColorBorder);
 
   int16_t points[8][2] = {};
@@ -293,18 +338,13 @@ void ControllerUi::renderImuCube(const ControllerViewState& state) {
   _screen.setTextDatum(lgfx::textdatum_t::bottom_center);
   _screen.setTextColor(kColorSecondary, kColorBackground);
   _screen.setFont(&fonts::Font0);
-  char orientation[40];
-  snprintf(orientation, sizeof(orientation), "R %.0f  P %.0f",
-           state.roll * kRadToDeg, state.pitch * kRadToDeg);
-  _screen.drawString(orientation, _screen.width() / 2, 211);
-  char flips[32];
-  snprintf(flips, sizeof(flips), "X %s  Y %s",
-           state.flipX ? "FLIP" : "NORMAL",
-           state.flipY ? "FLIP" : "NORMAL");
-  _screen.drawString(flips, _screen.width() / 2, 32);
   _screen.drawString("L/R: base rotation", _screen.width() / 2, 211);
-  _screen.drawString("A: X flip | B: Y flip", _screen.width() / 2, 225);
-  _screen.drawString("Click save | hold next", _screen.width() / 2, 238);
+  char flips[32];
+  snprintf(flips, sizeof(flips), "A:X %s  B:Y %s",
+           state.flipX ? "FLIP" : "NORM",
+           state.flipY ? "FLIP" : "NORM");
+  _screen.drawString(flips, _screen.width() / 2, 225);
+  _screen.drawString("Click save | hold A: mic", _screen.width() / 2, 238);
   _screen.pushSprite(0, 0);
 }
 

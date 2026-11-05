@@ -1,1 +1,2 @@
 bleak>=0.22,<2
+onnx-asr[cpu,hub]>=0.12,<1
