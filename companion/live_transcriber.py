@@ -536,6 +536,10 @@ class Transcriber:
         import onnxruntime
 
         self._onnx_asr = onnx_asr
+        if device != "cpu":
+            preload_dlls = getattr(onnxruntime, "preload_dlls", None)
+            if preload_dlls is not None:
+                preload_dlls(directory="")
         providers = self._providers(
             device, onnxruntime.get_available_providers()
         )
@@ -1125,10 +1129,15 @@ def main() -> None:
         print(f"Live streams update the field every "
               f"{args.partial_interval:g}s and are rewritten once at the end.")
     if voice_router is not None:
+        confirmation = (
+            "desktop confirmation dialogs"
+            if os.environ.get("STICKS3_INTERACTION_DIR")
+            else "terminal approval"
+        )
         print(
             "Voice commands enabled. Say 'OpenCode: ...', 'Claude: ...', "
-            "'Copilot: ...', or 'run action: ...'; every command requires "
-            "terminal approval."
+            f"'Copilot: ...', or 'run action: ...'; commands require "
+            f"{confirmation}."
         )
         print(
             "Interactive actions run in the background. While a choice popup "

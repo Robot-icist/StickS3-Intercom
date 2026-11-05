@@ -11,6 +11,11 @@ if (-not (Test-Path $python)) {
     throw "Project virtual environment not found at $python. Create .venv and install companion requirements first."
 }
 
+& $python -m pip uninstall -y onnxruntime
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to remove the CPU-only ONNX Runtime package before installing the CUDA build."
+}
+
 & $python -m pip install -r $requirements
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install Windows executable build dependencies."
@@ -20,7 +25,7 @@ if ($LASTEXITCODE -ne 0) {
     --noconfirm `
     --clean `
     --onedir `
-    --console `
+    --windowed `
     --name StickS3Companion `
     --distpath $distPath `
     --workpath $buildPath `
@@ -29,6 +34,7 @@ if ($LASTEXITCODE -ne 0) {
     --collect-submodules bleak.backends.winrt `
     --collect-all onnx_asr `
     --collect-all onnxruntime `
+    --collect-binaries nvidia `
     --collect-all huggingface_hub `
     --collect-all winrt `
     $entryPoint

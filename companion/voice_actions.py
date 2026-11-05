@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,14 +38,15 @@ _PREFIXES = (
 def parse_intent(transcript: str) -> Intent:
     """Parse a spoken target prefix; unprefixed speech remains dictation."""
     stripped = transcript.strip()
-    lowered = stripped.casefold()
     for prefix, target in _PREFIXES:
-        if lowered == prefix:
-            return Intent("pending", "")
-        if lowered.startswith(prefix) and len(lowered) > len(prefix):
-            boundary = stripped[len(prefix)]
-            if boundary in (":", " ", ","):
-                return Intent(target, stripped[len(prefix) + 1 :].strip())
+        if target == "opencode":
+            pattern = r"^\s*open[\s_-]*code(?=$|[\s,:;.-])"
+        else:
+            pattern = rf"^\s*{re.escape(prefix)}(?=$|[\s,:;.-])"
+        match = re.match(pattern, stripped, flags=re.IGNORECASE)
+        if match is not None:
+            content = stripped[match.end():].lstrip(" \t,:;.-")
+            return Intent(target, content) if content else Intent("pending", "")
     return Intent("dictation", stripped)
 
 
@@ -52,6 +54,17 @@ def default_actions_path() -> Path:
     root = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME")
     base = Path(root) if root else Path.home() / ".config"
     return base / "StickS3Intercom" / "actions.json"
+
+
+def _agent_cli_options() -> dict[str, int | None]:
+    if "STICKS3_INTERACTION_DIR" not in os.environ:
+        return {}
+    return {
+        "stdin": None,
+        "stdout": None,
+        "stderr": None,
+        "creationflags": getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    }
 
 
 @dataclass(frozen=True)
@@ -127,6 +140,7 @@ class VoiceCommandRouter:
         self.copilot_command = copilot_command
         self.copilot_cwd = copilot_cwd
         self.timeout = timeout
+        self.actions_path = actions_path
         self.actions = load_actions(actions_path)
         self._interactive_lock = threading.Lock()
         self._interactive_process: subprocess.Popen[bytes] | None = None
@@ -139,6 +153,12 @@ class VoiceCommandRouter:
             return None
 
         intent = parse_intent(transcript)
+        if intent.target == "action":
+            try:
+                self.actions = load_actions(self.actions_path)
+            except ValueError as error:
+                print(f"Could not reload voice actions: {error}", file=sys.stderr)
+                return None
         if intent.target == "action" and intent.content:
             action = self.actions.get(intent.content.casefold())
             if action is not None and action.interactive:
@@ -228,6 +248,10 @@ class VoiceCommandRouter:
         *,
         session_dir: Path | None = None,
     ) -> bool:
+        if session_dir is None:
+            interaction_dir = os.environ.get("STICKS3_INTERACTION_DIR")
+            if interaction_dir:
+                session_dir = Path(interaction_dir)
         if session_dir is not None:
             selection = prompt_choice(
                 "Confirm voice action",
@@ -298,20 +322,48 @@ class VoiceCommandRouter:
             directory = session.get("directory") or ""
             if isinstance(session_id, str):
                 print(f"  {index}. {title}  [{directory}]  {session_id}")
-        try:
-            selection = input("Session number (blank cancels): ").strip()
-        except (EOFError, OSError):
-            return ""
-        if not selection:
-            return ""
-        try:
-            selection_index = int(selection) - 1
-            if selection_index < 0:
-                raise IndexError
-            selected = sessions[selection_index]
-        except (ValueError, IndexError):
-            print("Invalid OpenCode session selection.")
-            return ""
+        interaction_dir = os.environ.get("STICKS3_INTERACTION_DIR")
+        if interaction_dir:
+            valid_sessions = [
+                session for session in sessions
+                if isinstance(session, dict) and isinstance(session.get("id"), str)
+            ]
+            if not valid_sessions:
+                raise RuntimeError("OpenCode returned no selectable sessions")
+            choices = tuple(
+                f"{session.get('title') or '(untitled)'} — "
+                f"{session.get('directory') or ''}"
+                for session in valid_sessions
+            )
+            aliases = tuple(
+                str(session.get("title") or f"session {index + 1}")
+                for index, session in enumerate(valid_sessions)
+            )
+            selected_index = prompt_choice(
+                "Choose OpenCode session",
+                "Select the session that should receive this voice command.",
+                choices,
+                voice_aliases=aliases,
+                session_dir=Path(interaction_dir),
+            )
+            if selected_index is None:
+                return ""
+            selected = valid_sessions[selected_index]
+        else:
+            try:
+                selection = input("Session number (blank cancels): ").strip()
+            except (EOFError, OSError):
+                return ""
+            if not selection:
+                return ""
+            try:
+                selection_index = int(selection) - 1
+                if selection_index < 0:
+                    raise IndexError
+                selected = sessions[selection_index]
+            except (ValueError, IndexError):
+                print("Invalid OpenCode session selection.")
+                return ""
         session_id = selected.get("id") if isinstance(selected, dict) else None
         if not isinstance(session_id, str):
             print("Selected OpenCode session has no ID.")
@@ -343,6 +395,7 @@ class VoiceCommandRouter:
                 cwd=self.opencode_cwd or Path.cwd(),
                 timeout=self.timeout,
                 check=False,
+                **_agent_cli_options(),
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError(f"Could not run OpenCode: {error}") from error
@@ -376,6 +429,7 @@ class VoiceCommandRouter:
                 cwd=cwd,
                 timeout=self.timeout,
                 check=False,
+                **_agent_cli_options(),
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError(f"Claude Code invocation failed: {error}") from error
@@ -404,6 +458,7 @@ class VoiceCommandRouter:
                 cwd=cwd,
                 timeout=self.timeout,
                 check=False,
+                **_agent_cli_options(),
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError(

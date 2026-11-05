@@ -259,6 +259,9 @@ negotiate an ATT MTU of at least 93 bytes for each frame to fit in one
 notification. Audio is delivered only to a companion that has connected and
 subscribed; Windows will not list this custom service as a microphone, so the
 Python companion below does the recording, transcription, and text injection.
+The companion refreshes a BLE heartbeat every second; without one for four
+seconds the StickS3 stops showing `AUDIO READY`, even if Windows retains a
+stale GATT subscription.
 
 The starter Python companion at `companion/ble_mic_receiver.py` finds the
 StickS3, subscribes to the custom service, decodes the frames, and saves each
@@ -272,10 +275,16 @@ run:
 
 ```powershell
 py -m venv .venv
+.\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
 .\.venv\Scripts\python.exe -m pip install -r companion\requirements.txt
 .\.venv\Scripts\python.exe -c "import bleak; print(bleak.__file__)"
 .\.venv\Scripts\python.exe companion\ble_mic_receiver.py
 ```
+
+The companion installs NVIDIA's CUDA-enabled ONNX Runtime and its CUDA/cuDNN
+runtime libraries. Automatic device selection prefers CUDA when available and
+falls back to CPU otherwise. A recent NVIDIA driver is required; this does not
+require the full CUDA Toolkit to be installed separately.
 
 Add `--transcribe` to chain the receiver to the speech-to-text companion
 described in the next section, so one command records and dictates.
@@ -300,8 +309,8 @@ After installing the dependencies above, each of these is a complete command:
 # 5. Two terminals for partial live: start the receiver, then this.
 .\.venv\Scripts\python.exe companion\live_transcriber.py --partial-live
 
-# 6. One dictation, English-only model, GPU when available.
-.\.venv\Scripts\python.exe companion\live_transcriber.py --model nemo-parakeet-tdt-0.6b-v2 --device cuda
+# 6. One dictation, English-only model, automatically uses CUDA when available.
+.\.venv\Scripts\python.exe companion\live_transcriber.py --model nemo-parakeet-tdt-0.6b-v2
 
 # 7. Full companion: BLE receiver, transcription, partial live text, and voice commands.
 .\.venv\Scripts\python.exe companion\ble_mic_receiver.py --voice-commands --transcribe-arg=--partial-live
@@ -316,35 +325,48 @@ before agent prompts and local actions are run. On the first transcription,
 Parakeet is downloaded to the Hugging Face cache (about 640 MB); subsequent
 runs reuse the cache.
 
-#### Windows executable
+#### Windows desktop companion
 
-The companion can also be packaged as a Windows console application. From the
-repository root, build it with the project virtual environment:
+The Windows companion opens a small dashboard for BLE connection status,
+transcription activity, recordings, and voice-action setup. It automatically
+starts BLE audio reception, partial live transcription, and confirmed voice
+command routing. From the repository root, build it with the project virtual
+environment:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\companion\build_windows.ps1
 ```
 
 The script installs the build-only PyInstaller dependency into `.venv` and
-creates an onedir bundle at `dist\StickS3Companion`. Run the same full-feature
-configuration with:
+creates a windowed onedir bundle at `dist\StickS3Companion`. Launch it with:
 
 ```powershell
-.\dist\StickS3Companion\StickS3Companion.exe --voice-commands --transcribe-arg=--partial-live
+.\dist\StickS3Companion\StickS3Companion.exe
 ```
 
-Double-clicking or launching `StickS3Companion.exe` with no arguments also
-starts transcription automatically and loads Parakeet before BLE discovery.
-Use `--receiver-only` when you only want WAV recordings without loading ASR.
-The model is downloaded on first use to the current Windows user's Hugging
-Face cache and reused on later launches.
+The dashboard starts listening automatically and shows connection and
+transcription status. Select **Configure actions** to add, edit, or remove
+allow-listed commands. Each action has a spoken name, executable, arguments
+(one per line), optional working directory, description, and a confirmation
+setting. After saving an action, say “run action: action name”; changes are
+picked up while the companion is running. Say “OpenCode …” or “OpenCode: …”
+to send a confirmed request to OpenCode, or say “Claude …” / “Copilot …” for
+those CLIs. Both “OpenCode” and “open code” are recognized. These requests
+open desktop confirmation/session dialogs instead of waiting for terminal
+input.
 
-Keep the console visible: it displays transcription and requests confirmation
-before routing speech to an agent or configured action. The executable bundle
-includes the application and its Python dependencies, but not the Parakeet
-model; the first transcription still needs internet access to download the
-model into the user's Hugging Face cache. This is an onedir build, so distribute
-the whole `dist\StickS3Companion` folder rather than copying the `.exe` alone.
+Unprefixed speech is transcribed and pasted into the focused input field.
+Partial transcription updates the text while recording, then replaces it with
+the final result. Press the StickS3 joystick to start a live utterance or BtnA
+to send a clip. The model is downloaded on first use to the current Windows
+user's Hugging Face cache and reused on later launches.
+
+The executable bundle includes the application and its Python dependencies,
+but not the Parakeet model; the first transcription still needs internet access
+to download the model. This is an onedir build, so distribute the whole
+`dist\StickS3Companion` folder rather than copying the `.exe` alone. For
+command-line diagnostics such as `--list`, use the Python receiver commands
+above; double-click the executable with no arguments to open the dashboard.
 
 If the automatic lookup cannot find the controller (for example because its
 Windows name differs), list the paired devices and connect by address:
@@ -406,6 +428,7 @@ Install the extra dependencies once, then use one of the
 processes):
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
 .\.venv\Scripts\python.exe -m pip install -r companion\requirements.txt
 ```
 
@@ -459,8 +482,8 @@ authoritative.
 
 #### Voice commands for OpenCode, Claude Code, and Copilot
 
-Voice command routing is opt-in (disabled by default). Start the receiver and
-transcriber together:
+Voice command routing is opt-in for command-line use. The Windows desktop
+companion enables it by default. Start the receiver and transcriber together:
 
 ```powershell
 .\.venv\Scripts\python.exe companion\ble_mic_receiver.py --voice-commands
@@ -479,12 +502,12 @@ prefixes:
 Unprefixed speech remains ordinary dictation. With `--partial-live`, partial
 transcripts are never sent to an agent or action; routing only happens after
 the final transcript is ready. Agent prompts and non-interactive local actions
-show their destination and require typing `y` or `yes` in the companion
-terminal. Interactive local actions use a desktop confirmation popup instead.
-A declined/cancelled prompt, a closed terminal, an unknown action, a missing
-CLI, or a command failure does not fall back to pasting the command into the
+show their destination and require confirmation. The Windows desktop app uses
+confirmation/session dialogs; the command-line companion asks for `y` or
+`yes` in its terminal. A cancelled prompt, an unknown action, a missing CLI,
+or a command failure does not fall back to pasting the command into the
 focused field. The agent CLIs may also request their own tool permissions;
-review and approve those in the terminal. The companion never adds automatic
+review and approve those in the CLI window. The companion never adds automatic
 “allow all tools” flags.
 
 **OpenCode:** Install and sign in to the `opencode` CLI, then launch the
@@ -567,8 +590,9 @@ Useful options:
   and `--watch PATH` / `--pattern TEXT` change the folder and file name filter
   (default `recordings` and `stickS3`).
 - `--model nemo-parakeet-tdt-0.6b-v2` switches to the English-only Parakeet,
-  `--quantization fp32` to full precision, and `--device cuda` / `--device
-  directml` to a GPU provider when the installed ONNX Runtime supports one.
+  `--quantization fp32` to full precision, and `--device auto|cuda|directml|cpu`
+  selects an execution provider. `auto` prefers NVIDIA CUDA on supported
+  systems and otherwise uses DirectML or CPU.
 - `--method type` sends keystrokes instead of using the clipboard (slower, but
   works in apps that block pasted input), `--method none` only prints, and
   `--include-existing` transcribes files that are already in the folder.

@@ -20,6 +20,8 @@ namespace {
 
 constexpr char kMicServiceUuid[] = "e5d10001-3c9b-4f6a-9b2d-2a7f4510a001";
 constexpr char kMicStreamUuid[] = "e5d10002-3c9b-4f6a-9b2d-2a7f4510a001";
+constexpr char kMicCompanionUuid[] = "e5d10003-3c9b-4f6a-9b2d-2a7f4510a001";
+constexpr uint32_t kCompanionHeartbeatTimeoutMs = 4000;
 constexpr uint8_t kProtocolVersion = 1;
 constexpr uint8_t kFlagLive = 0x01;
 constexpr uint8_t kFlagClip = 0x02;
@@ -43,6 +45,8 @@ constexpr int16_t kStepTable[89] = {
 };
 
 std::atomic<bool> gMicSubscribed{false};
+std::atomic<bool> gCompanionHeartbeatReceived{false};
+std::atomic<uint32_t> gLastCompanionHeartbeatAt{0};
 
 class MicSubscriptionCallbacks final : public BLECharacteristicCallbacks {
  public:
@@ -56,10 +60,21 @@ class MicSubscriptionCallbacks final : public BLECharacteristicCallbacks {
 
 MicSubscriptionCallbacks gMicCallbacks;
 
+class CompanionHeartbeatCallbacks final : public BLECharacteristicCallbacks {
+ public:
+  void onWrite(BLECharacteristic*) override {
+    gLastCompanionHeartbeatAt.store(millis(), std::memory_order_release);
+    gCompanionHeartbeatReceived.store(true, std::memory_order_release);
+  }
+};
+
+CompanionHeartbeatCallbacks gCompanionHeartbeatCallbacks;
+
 }  // namespace
 
 void resetBleMicSubscription() {
   gMicSubscribed.store(false, std::memory_order_release);
+  gCompanionHeartbeatReceived.store(false, std::memory_order_release);
 }
 
 bool BleMicAudio::begin(BLEServer* server) {
@@ -78,7 +93,7 @@ bool BleMicAudio::begin(BLEServer* server) {
     return false;
   }
 
-  _service = server->createService(BLEUUID(kMicServiceUuid), 8);
+  _service = server->createService(BLEUUID(kMicServiceUuid), 12);
   if (_service == nullptr) {
     Serial.println("[mic] BLE audio service creation failed");
     _status = MicAudioStatus::Error;
@@ -103,6 +118,15 @@ bool BleMicAudio::begin(BLEServer* server) {
   _audioStream->addDescriptor(cccd);
 #endif
   _audioStream->setCallbacks(&gMicCallbacks);
+  BLECharacteristic* companion = _service->createCharacteristic(
+      BLEUUID(kMicCompanionUuid),
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  if (companion == nullptr) {
+    Serial.println("[mic] BLE companion heartbeat creation failed");
+    _status = MicAudioStatus::Error;
+    return false;
+  }
+  companion->setCallbacks(&gCompanionHeartbeatCallbacks);
   _service->start();
 
   if (M5.Mic.isEnabled()) {
@@ -125,6 +149,11 @@ bool BleMicAudio::begin(BLEServer* server) {
 bool BleMicAudio::subscribed() const {
   if (_server == nullptr || _server->getConnectedCount() == 0 ||
       _audioStream == nullptr) {
+    return false;
+  }
+  if (!gCompanionHeartbeatReceived.load(std::memory_order_acquire) ||
+      millis() - gLastCompanionHeartbeatAt.load(std::memory_order_acquire) >
+          kCompanionHeartbeatTimeoutMs) {
     return false;
   }
 #if defined(CONFIG_BLUEDROID_ENABLED)

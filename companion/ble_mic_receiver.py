@@ -18,6 +18,8 @@ from bleak.exc import BleakError
 DEVICE_NAME = "StickS3 BLE Controller"
 MIC_SERVICE_UUID = "e5d10001-3c9b-4f6a-9b2d-2a7f4510a001"
 MIC_STREAM_UUID = "e5d10002-3c9b-4f6a-9b2d-2a7f4510a001"
+MIC_COMPANION_UUID = "e5d10003-3c9b-4f6a-9b2d-2a7f4510a001"
+COMPANION_HEARTBEAT_SECONDS = 1.0
 SAMPLE_RATE = 8000
 SAMPLES_PER_FRAME = 160
 HEADER_SIZE = 6
@@ -429,11 +431,23 @@ async def receive(client: BleakClient, output_dir: Path,
     receiver = Receiver(output_dir)
     try:
         await client.start_notify(MIC_STREAM_UUID, receiver.on_notification)
-        print(
-            "Subscribed to the microphone stream. Use joystick click for live "
-            "audio, BtnA for a clip, or Ctrl+C to quit."
+        await client.write_gatt_char(
+            MIC_COMPANION_UUID, b"\x01", response=False
         )
-        await disconnected.wait()
+        print(
+            "Companion connected and microphone ready. Use joystick click "
+            "for live audio, BtnA for a clip, or Ctrl+C to quit."
+        )
+        while not disconnected.is_set():
+            try:
+                await asyncio.wait_for(
+                    disconnected.wait(),
+                    timeout=COMPANION_HEARTBEAT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                await client.write_gatt_char(
+                    MIC_COMPANION_UUID, b"\x01", response=False
+                )
         print("StickS3 disconnected.")
     finally:
         if client.is_connected:
@@ -560,9 +574,11 @@ def start_transcriber(
         command.append("--voice-commands")
     if args.transcribe or args.voice_commands:
         print("Starting the ASR model now, before BLE connection begins.")
-    print("Starting transcriber: " + " ".join(command))
+    print("Starting transcriber: " + " ".join(command), flush=True)
     try:
-        return subprocess.Popen(command)
+        output = sys.stdout if sys.stdout is not None else subprocess.DEVNULL
+        errors = sys.stderr if sys.stderr is not None else subprocess.DEVNULL
+        return subprocess.Popen(command, stdout=output, stderr=errors)
     except OSError as error:
         print(f"Could not start the transcriber: {error}", file=sys.stderr)
         return None

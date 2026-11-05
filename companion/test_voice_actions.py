@@ -22,6 +22,12 @@ class ParseIntentTests(unittest.TestCase):
         cases = {
             "OpenCode: fix the failing test": ("opencode", "fix the failing test"),
             "Open code, explain the diff": ("opencode", "explain the diff"),
+            "opencode: inspect this project": ("opencode", "inspect this project"),
+            "open-code: inspect this project": ("opencode", "inspect this project"),
+            "open_code inspect this project": (
+                "opencode",
+                "inspect this project",
+            ),
             "Claude Code: summarize this file": ("claude", "summarize this file"),
             "GitHub Copilot: explain this change": (
                 "copilot",
@@ -110,6 +116,27 @@ class VoiceCommandRouterTests(unittest.TestCase):
                     "run action: show setup; delete everything"
                 )
             run.assert_not_called()
+
+    def test_action_configuration_is_reloaded_after_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            router = self.make_router(config)
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "fresh action": {
+                            "command": ["python", "-c", "pass"],
+                            "description": "Added while the companion was running",
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            with patch.object(router, "_run_action") as run_action:
+                router.route("run action: fresh action")
+
+            run_action.assert_called_once_with("fresh action")
 
     def test_declined_action_does_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -328,6 +355,63 @@ class VoiceCommandRouterTests(unittest.TestCase):
                 "--auto", run.call_args_list[1].args[0]
             )
             self.assertEqual(run.call_args_list[1].kwargs["cwd"], Path(temporary))
+
+    def test_opencode_confirmation_uses_desktop_dialog_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"STICKS3_INTERACTION_DIR": temporary},
+                ),
+                patch("voice_actions.prompt_choice", return_value=1) as choose,
+            ):
+                approved = VoiceCommandRouter._confirm(
+                    "OpenCode session session-1",
+                    "inspect this project",
+                )
+
+        self.assertTrue(approved)
+        self.assertEqual(choose.call_args.kwargs["session_dir"], Path(temporary))
+
+    def test_opencode_alias_uses_desktop_session_and_confirmation_dialogs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"STICKS3_INTERACTION_DIR": temporary},
+                ),
+                patch(
+                    "voice_actions.shutil.which",
+                    return_value="opencode.cmd",
+                ),
+                patch(
+                    "voice_actions.subprocess.run",
+                    side_effect=(
+                        subprocess.CompletedProcess(
+                            [],
+                            0,
+                            stdout=json.dumps([{
+                                "id": "session-1",
+                                "title": "Project",
+                                "directory": temporary,
+                            }]),
+                            stderr="",
+                        ),
+                        subprocess.CompletedProcess([], 0),
+                    ),
+                ) as run,
+                patch(
+                    "voice_actions.prompt_choice",
+                    side_effect=(0, 1),
+                ) as choose,
+            ):
+                router.route("opencode inspect this project")
+
+        self.assertEqual(router.opencode_session, "session-1")
+        self.assertEqual(choose.call_count, 2)
+        self.assertIn("Project", choose.call_args_list[0].args[2][0])
+        self.assertIn("creationflags", run.call_args_list[1].kwargs)
 
     def test_claude_invocation_uses_argv_and_optional_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
