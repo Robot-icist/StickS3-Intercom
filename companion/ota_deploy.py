@@ -378,47 +378,93 @@ def _restart_companion(prefer_source: bool = False) -> bool:
     return False
 
 
+def _run_interactive() -> tuple[str, tuple[str, ...]] | None:
+    """Run interactive prompts and return (environment, components) or None if cancelled."""
+    target = _choose_target(None)
+    if target is None:
+        print("OTA update cancelled.")
+        return None
+
+    image_choices = (
+        "Firmware only",
+        "LittleFS filesystem only",
+        "Firmware and filesystem",
+    )
+    component_index = prompt_choice(
+        "Choose update contents",
+        "Select the image or images to build and upload.",
+        image_choices,
+        default=0,
+        voice_aliases=("firmware", "littlefs", "firmware and filesystem"),
+    )
+    if component_index is None:
+        print("OTA update cancelled.")
+        return None
+    components = (
+        ("firmware",)
+        if component_index == 0
+        else ("filesystem",)
+        if component_index == 1
+        else ("filesystem", "firmware")
+    )
+    return target.environment, components
+
+
 def main() -> bool:
     args = _parse_args()
 
-    # Run interactive prompts FIRST (before kill), so kill-to-scan gap is minimal
-    # This matches the firmware target which has no prompts between kill and scan
+    # If running interactively (no --environment/--component), run prompts then
+    # re-execute with the chosen args to use the exact same working code path
+    # as the non-interactive ota_deploy/ota_firmware/ota_littlefs targets.
+    if args.environment is None or args.component is None:
+        interactive_result = _run_interactive()
+        if interactive_result is None:
+            return False
+        chosen_env, chosen_components = interactive_result
+
+        # Map components tuple back to --component value
+        if chosen_components == ("firmware",):
+            component_arg = "firmware"
+        elif chosen_components == ("filesystem",):
+            component_arg = "filesystem"
+        else:
+            component_arg = "both"
+
+        # Re-execute with the chosen arguments
+        print(
+            f"\n[OTA] Re-running with --environment {chosen_env} --component {component_arg}...",
+            flush=True,
+        )
+        command = [
+            sys.executable,
+            "-u",
+            str(Path(__file__).resolve()),
+            "--environment",
+            chosen_env,
+            "--component",
+            component_arg,
+        ]
+        if args.restart_companion_source:
+            command.append("--restart-companion-source")
+        elif args.restart_companion:
+            command.append("--restart-companion")
+
+        result = subprocess.run(command, cwd=ROOT)
+        return result.returncode == 0
+
+    # Non-interactive path: exact same logic as firmware target (proven working)
     target = _choose_target(args.environment)
     if target is None:
         print("OTA update cancelled.")
         return False
 
-    if args.component is not None:
-        components = (
-            ("firmware",)
-            if args.component == "firmware"
-            else ("filesystem",)
-            if args.component == "filesystem"
-            else ("filesystem", "firmware")
-        )
-    else:
-        image_choices = (
-            "Firmware only",
-            "LittleFS filesystem only",
-            "Firmware and filesystem",
-        )
-        component_index = prompt_choice(
-            "Choose update contents",
-            "Select the image or images to build and upload.",
-            image_choices,
-            default=0,
-            voice_aliases=("firmware", "littlefs", "firmware and filesystem"),
-        )
-        if component_index is None:
-            print("OTA update cancelled.")
-            return False
-        components = (
-            ("firmware",)
-            if component_index == 0
-            else ("filesystem",)
-            if component_index == 1
-            else ("filesystem", "firmware")
-        )
+    components = (
+        ("firmware",)
+        if args.component == "firmware"
+        else ("filesystem",)
+        if args.component == "filesystem"
+        else ("filesystem", "firmware")
+    )
     if target.environment == "sticks3_ble_hid" and "filesystem" in components:
         print(
             "\nNote: BLE HID does not currently use LittleFS. Its image is "

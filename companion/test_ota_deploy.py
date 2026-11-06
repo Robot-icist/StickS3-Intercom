@@ -213,7 +213,7 @@ class OtaDeployTests(unittest.TestCase):
             ota_deploy.main()
 
         build.assert_called_once_with(target, "firmware", "pio")
-        choose_device.assert_called_once_with(target, retry_count=4)
+        choose_device.assert_called_once_with(target, retry_count=8)
         upload.assert_called_once_with(
             image,
             device,
@@ -267,7 +267,7 @@ class OtaDeployTests(unittest.TestCase):
         )
         self.assertEqual(
             [call.kwargs["retry_count"] for call in choose_device.call_args_list],
-            [4, 12],
+            [8, 10],
         )
 
 

@@ -218,66 +218,78 @@ ROOT = (
 DEPLOYER = ROOT / "companion" / "ota_deploy.py"
 PIO_ENVIRONMENT = env.subst("$PIOENV")
 
-env.AddCustomTarget(
-    "ota_deploy",
-    None,
-    _deploy_action("firmware", "sticks3_ble_hid"),
-    title="OTA: BLE HID firmware (default)",
-    description="Build and upload StickS3 BLE HID firmware over authenticated OTA.",
+# Use "General" group (built-in, appears first in PlatformIO task explorer)
+GROUP = "General"
+
+env.AddTarget(
+    group=GROUP,
+    name="companion_run_source",
+    dependencies=None,
+    actions=_companion_source_action,
+    title="Companion: run from source",
+    description="Launch the desktop companion with the project Python environment.",
 )
-env.AddCustomTarget(
-    "ota_choose",
-    None,
-    _deploy_action(),
-    title="OTA: choose environment and image",
-    description="Interactively choose a StickS3 environment and image to upload.",
-)
-env.AddCustomTarget(
-    "ota_firmware",
-    None,
-    _deploy_action("firmware"),
-    title="OTA: firmware",
-    description="Build and upload this PlatformIO environment's firmware.",
-)
-env.AddCustomTarget(
-    "ota_littlefs",
-    None,
-    _deploy_action("filesystem"),
-    title="OTA: LittleFS",
-    description="Build and upload this PlatformIO environment's LittleFS image.",
-)
-env.AddCustomTarget(
-    "ota_firmware_littlefs",
-    None,
-    _deploy_action("both"),
-    title="OTA: firmware and LittleFS",
-    description="Build and upload both images for this PlatformIO environment.",
-)
-env.AddCustomTarget(
-    "companion_tests",
-    None,
-    _companion_tests_action,
-    title="Companion: run Python tests",
-    description="Run the companion Python unittest suite.",
-)
-env.AddCustomTarget(
-    "companion_build_windows",
-    None,
-    _companion_build_action,
-    title="Companion: build Windows app",
-    description="Build the packaged StickS3Companion Windows executable.",
-)
-env.AddCustomTarget(
-    "companion_run",
-    None,
-    _companion_run_action,
+env.AddTarget(
+    group=GROUP,
+    name="companion_run",
+    dependencies=None,
+    actions=_companion_run_action,
     title="Companion: run packaged app",
     description="Launch the packaged StickS3Companion.exe from dist.",
 )
-env.AddCustomTarget(
-    "companion_run_source",
-    None,
-    _companion_source_action,
-    title="Companion: run from source",
-    description="Launch the desktop companion with the project Python environment.",
+env.AddTarget(
+    group=GROUP,
+    name="companion_build_windows",
+    dependencies=None,
+    actions=_companion_build_action,
+    title="Companion: build Windows app",
+    description="Build the packaged StickS3Companion Windows executable.",
+)
+env.AddTarget(
+    group=GROUP,
+    name="companion_tests",
+    dependencies=None,
+    actions=_companion_tests_action,
+    title="Companion: run Python tests",
+    description="Run the companion Python unittest suite.",
+)
+env.AddTarget(
+    group=GROUP,
+    name="ota_choose",
+    dependencies=None,
+    actions=_deploy_action(),
+    title="OTA: choose environment and image",
+    description="Interactively choose a StickS3 environment and image to upload.",
+)
+env.AddTarget(
+    group=GROUP,
+    name="ota_firmware",
+    dependencies=None,
+    actions=_deploy_action("firmware"),
+    title="OTA: firmware",
+    description="Build and upload this PlatformIO environment's firmware.",
+)
+env.AddTarget(
+    group=GROUP,
+    name="ota_littlefs",
+    dependencies=None,
+    actions=_deploy_action("filesystem"),
+    title="OTA: LittleFS",
+    description="Build and upload this PlatformIO environment's LittleFS image.",
+)
+env.AddTarget(
+    group=GROUP,
+    name="ota_firmware_littlefs",
+    dependencies=None,
+    actions=_deploy_action("both"),
+    title="OTA: firmware and LittleFS",
+    description="Build and upload both images for this PlatformIO environment.",
+)
+env.AddTarget(
+    group=GROUP,
+    name="ota_deploy",
+    dependencies=None,
+    actions=_deploy_action("firmware", "sticks3_ble_hid"),
+    title="OTA: BLE HID firmware (default)",
+    description="Build and upload StickS3 BLE HID firmware over authenticated OTA.",
 )
