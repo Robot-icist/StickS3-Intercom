@@ -127,6 +127,7 @@ def prompt_choice(
     selected = default
     answer: int | None = None
     buttons: list[tk.Button] = []
+    voice_after_id: str | None = None
     def render_selection() -> None:
         for index, button in enumerate(buttons):
             active = index == selected
@@ -144,8 +145,14 @@ def prompt_choice(
         render_selection()
 
     def finish(index: int | None) -> None:
-        nonlocal answer
+        nonlocal answer, voice_after_id
         answer = index
+        # Cancel any pending voice callback
+        if voice_after_id is not None:
+            try:
+                root.after_cancel(voice_after_id)
+            except Exception:
+                pass
         root.destroy()
 
     def choose(index: int) -> None:
@@ -169,7 +176,7 @@ def prompt_choice(
         return None
 
     def read_voice_choices() -> None:
-        nonlocal voice_offset, selected
+        nonlocal voice_offset, selected, voice_after_id
         if voice_path is not None:
             try:
                 with voice_path.open("rb") as stream:
@@ -192,7 +199,7 @@ def prompt_choice(
                             render_selection()
             except FileNotFoundError:
                 pass
-        root.after(100, read_voice_choices)
+        voice_after_id = root.after(100, read_voice_choices)
 
     try:
         card = tk.Frame(root, background="#101827", padx=28, pady=24)
@@ -246,11 +253,17 @@ def prompt_choice(
         x = (root.winfo_screenwidth() - width) // 2
         y = (root.winfo_screenheight() - height) // 2
         root.geometry(f"{width}x{height}+{x}+{y}")
-        root.after(100, read_voice_choices)
+        voice_after_id = root.after(100, read_voice_choices)
         root.after(100, root.focus_force)
         root.mainloop()
         return answer
     finally:
+        # Ensure voice callback is cancelled on any exit path
+        if voice_after_id is not None:
+            try:
+                root.after_cancel(voice_after_id)
+            except Exception:
+                pass
         _deactivate_prompt(state_path)
 
 

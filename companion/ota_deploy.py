@@ -22,8 +22,8 @@ def _kill_companion_processes() -> None:
     """Kill any running StickS3Companion processes (exe or python launcher)."""
     killed = False
     if os.name == "nt":
-        # Kill the packaged executable
-        for proc_name in ["StickS3Companion.exe", "StickS3Companion"]:
+        # Kill the packaged executable (try multiple possible names)
+        for proc_name in ["StickS3Companion.exe", "StickS3Companion", "stickS3Companion.exe"]:
             try:
                 result = subprocess.run(
                     ["taskkill", "/F", "/IM", proc_name],
@@ -35,6 +35,45 @@ def _kill_companion_processes() -> None:
                     killed = True
             except OSError:
                 pass
+
+        # Kill Python processes running launcher.py or live_transcriber.py using wmic
+        # This matches the PowerShell approach in build_windows.ps1
+        try:
+            result = subprocess.run(
+                ["wmic", "process", "where", "name='python.exe' AND (commandline like '%launcher.py%' OR commandline like '%live_transcriber.py%')", "get", "ProcessId"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split('\n')
+                for line in lines[1:]:  # Skip header
+                    pid = line.strip()
+                    if pid and pid.isdigit():
+                        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+                print("[OTA] Killed existing companion Python processes via wmic.", flush=True)
+                killed = True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        # Fallback: use PowerShell to enumerate and kill (most reliable)
+        try:
+            ps_script = (
+                "Get-Process -Name 'StickS3Companion' -ErrorAction SilentlyContinue | Stop-Process -Force; "
+                "Get-WmiObject Win32_Process -Filter \"Name = 'python.exe' AND (CommandLine LIKE '%launcher.py%' OR CommandLine LIKE '%live_transcriber.py%')\" "
+                "-ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+            )
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                print("[OTA] Killed companion processes via PowerShell.", flush=True)
+                killed = True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     else:
         # On Linux/macOS, use pkill
         for proc_name in ["StickS3Companion"]:
@@ -49,8 +88,21 @@ def _kill_companion_processes() -> None:
                     killed = True
             except OSError:
                 pass
+        # Kill python scripts
+        for script in ["launcher.py", "live_transcriber.py"]:
+            try:
+                result = subprocess.run(
+                    ["pkill", "-f", script],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print(f"[OTA] Killed existing companion {script} processes.", flush=True)
+                    killed = True
+            except OSError:
+                pass
 
-    # Also kill any python processes running launcher.py or live_transcriber.py
+    # Also try psutil as a fallback
     try:
         result = subprocess.run(
             [sys.executable, "-c", "import psutil; [p.kill() for p in psutil.process_iter() if 'launcher.py' in ' '.join(p.cmdline()) or 'live_transcriber.py' in ' '.join(p.cmdline())]"],
@@ -59,7 +111,7 @@ def _kill_companion_processes() -> None:
             timeout=5,
         )
         if result.returncode == 0:
-            print("[OTA] Killed existing companion Python processes.", flush=True)
+            print("[OTA] Killed existing companion Python processes via psutil.", flush=True)
             killed = True
     except (OSError, subprocess.TimeoutExpired, ImportError):
         pass
@@ -209,7 +261,16 @@ async def _discover_with_retries(
 ) -> list[OtaDevice]:
     for attempt in range(retry_count):
         try:
-            return await discover_ota_devices(family)
+            # Same timeout logic as firmware target - no per-attempt kills
+            return await asyncio.wait_for(discover_ota_devices(family), timeout=6.0)
+        except asyncio.TimeoutError:
+            if attempt + 1 == retry_count:
+                raise OtaDiscoveryError("BLE device discovery timed out after 6s")
+            print(
+                f"BLE OTA access attempt {attempt + 1}/{retry_count} timed out, retrying...",
+                flush=True,
+            )
+            await asyncio.sleep(1)
         except OtaDiscoveryError as error:
             if attempt + 1 == retry_count:
                 raise
@@ -218,11 +279,11 @@ async def _discover_with_retries(
                 f"{error}\nRetrying device discovery...",
                 flush=True,
             )
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
     raise RuntimeError("BLE device discovery ended without a result.")
 
 
-def _choose_device(target: Target, retry_count: int = 4) -> OtaDevice | None:
+def _choose_device(target: Target, retry_count: int = 8) -> OtaDevice | None:
     print(
         f"Searching for {target.name} and requesting temporary OTA access "
         "over BLE...",
@@ -261,40 +322,67 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--restart-companion",
         action="store_true",
-        help="restart the StickS3Companion app after OTA update completes",
+        help="restart the StickS3Companion app after OTA update completes (tries exe first)",
+    )
+    parser.add_argument(
+        "--restart-companion-source",
+        action="store_true",
+        help="restart the StickS3Companion app from source after OTA update completes",
     )
     return parser.parse_args()
 
 
-def _restart_companion() -> bool:
+def _restart_companion(prefer_source: bool = False) -> bool:
     """Restart the StickS3Companion app from source or packaged executable."""
     print("[OTA] Restarting companion app...", flush=True)
-    # Try packaged executable first
-    exe_path = ROOT / "dist" / "StickS3Companion" / "StickS3Companion.exe"
-    if exe_path.is_file():
-        try:
-            subprocess.Popen([str(exe_path)], cwd=str(ROOT))
-            print(f"[OTA] Started {exe_path}", flush=True)
-            return True
-        except OSError as e:
-            print(f"[OTA] Failed to start packaged app: {e}", flush=True)
-    # Fall back to running from source
     python = Path(sys.executable)
     launcher = ROOT / "companion" / "launcher.py"
-    if launcher.is_file():
-        try:
-            subprocess.Popen([str(python), "-u", str(launcher)], cwd=str(ROOT))
-            print(f"[OTA] Started companion from source: {launcher}", flush=True)
-            return True
-        except OSError as e:
-            print(f"[OTA] Failed to start from source: {e}", flush=True)
+    exe_path = ROOT / "dist" / "StickS3Companion" / "StickS3Companion.exe"
+
+    if prefer_source:
+        # Try source first
+        if launcher.is_file():
+            try:
+                subprocess.Popen([str(python), "-u", str(launcher)], cwd=str(ROOT))
+                print(f"[OTA] Started companion from source: {launcher}", flush=True)
+                return True
+            except OSError as e:
+                print(f"[OTA] Failed to start from source: {e}", flush=True)
+        # Fall back to exe
+        if exe_path.is_file():
+            try:
+                subprocess.Popen([str(exe_path)], cwd=str(ROOT))
+                print(f"[OTA] Started {exe_path}", flush=True)
+                return True
+            except OSError as e:
+                print(f"[OTA] Failed to start packaged app: {e}", flush=True)
+    else:
+        # Try exe first (default)
+        if exe_path.is_file():
+            try:
+                subprocess.Popen([str(exe_path)], cwd=str(ROOT))
+                print(f"[OTA] Started {exe_path}", flush=True)
+                return True
+            except OSError as e:
+                print(f"[OTA] Failed to start packaged app: {e}", flush=True)
+        # Fall back to source
+        if launcher.is_file():
+            try:
+                subprocess.Popen([str(python), "-u", str(launcher)], cwd=str(ROOT))
+                print(f"[OTA] Started companion from source: {launcher}", flush=True)
+                return True
+            except OSError as e:
+                print(f"[OTA] Failed to start from source: {e}", flush=True)
+
     print("[OTA] Could not find companion app to restart.", flush=True)
     return False
 
 
 def main() -> bool:
-    _kill_companion_processes()
     args = _parse_args()
+
+    # Run interactive prompts FIRST (before kill), so kill-to-scan gap is minimal
+    # This matches the firmware target which has no prompts between kill and scan
     target = _choose_target(args.environment)
     if target is None:
         print("OTA update cancelled.")
@@ -338,6 +426,31 @@ def main() -> bool:
             "runtime effect."
         )
 
+    # On Windows, tkinter (used by prompts) may leave asyncio event loop
+    # and COM apartment state that interferes with bleak/Bluetooth.
+    # Force full cleanup before kill/scan.
+    if os.name == "nt":
+        try:
+            import asyncio
+            import gc
+            # Force garbage collection to destroy any lingering tkinter objects
+            gc.collect()
+            # Reset event loop to clean state
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop.is_closed():
+                    loop.close()
+            except Exception:
+                pass
+            asyncio.set_event_loop(asyncio.new_event_loop())
+        except Exception:
+            pass
+
+    # NOW kill companion (after prompts, before scan) - matches firmware target order
+    _kill_companion_processes()
+    import time
+    time.sleep(3.0)
+
     pio = _find_pio()
     uploader = _find_espota()
     images = [
@@ -347,7 +460,7 @@ def main() -> bool:
 
     device: OtaDevice | None = None
     for index, (component, image) in enumerate(images):
-        device = _choose_device(target, retry_count=12 if index else 4)
+        device = _choose_device(target, retry_count=10 if index else 8)
         if device is None:
             print("OTA update cancelled.")
             return False
@@ -360,8 +473,10 @@ def main() -> bool:
         )
 
     print(f"\nOTA update completed for {target.name} at {device.host}.")
-    if args.restart_companion:
-        _restart_companion()
+    if args.restart_companion_source:
+        _restart_companion(prefer_source=True)
+    elif args.restart_companion:
+        _restart_companion(prefer_source=False)
     return True
 
 

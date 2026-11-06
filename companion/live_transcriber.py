@@ -524,6 +524,22 @@ def read_open_wav(path: Path) -> OpenWav:
 # Transcription
 # ---------------------------------------------------------------------------
 
+
+def _load_transcriber_async(
+    model_name: str,
+    quantization: Optional[str],
+    device: str,
+    model_path: Optional[Path],
+    holder: dict,
+) -> None:
+    """Load the ASR model in a background thread, store result in holder dict."""
+    try:
+        q = quantization if quantization != "fp32" else None
+        holder["transcriber"] = Transcriber(model_name, q, device, model_path)
+    except Exception as error:  # noqa: BLE001 - store error to re-raise in main thread
+        holder["error"] = error
+
+
 class Transcriber:
     def __init__(
         self,
@@ -1043,6 +1059,16 @@ def main() -> None:
     except (AttributeError, OSError):
         pass
 
+    # Start loading the ASR model in background immediately (primary thing to load)
+    transcriber_holder = {"transcriber": None, "error": None}
+    transcriber_future = threading.Thread(
+        target=_load_transcriber_async,
+        args=(args.model, args.quantization, args.device, args.model_path, transcriber_holder),
+        name="model-loader",
+        daemon=True,
+    )
+    transcriber_future.start()
+
     if not args.watch.is_dir():
         try:
             args.watch.mkdir(parents=True, exist_ok=True)
@@ -1051,8 +1077,7 @@ def main() -> None:
                 f"cannot use {args.watch} as the watch folder: {error}"
             )
 
-    # Snapshot the folder before the model loads so that a recording finished
-    # during the first few seconds is still seen as new.
+    # Snapshot the folder while model loads
     watcher = Watcher(
         folder=args.watch,
         settle=args.settle,
@@ -1063,24 +1088,11 @@ def main() -> None:
     )
     watcher.prime()
 
-    try:
-        transcriber = Transcriber(
-            args.model,
-            None if args.quantization == "fp32" else args.quantization,
-            args.device,
-            args.model_path,
-        )
-    except ImportError:
-        print(
-            "onnx-asr is not installed. Run:\n"
-            "  .\\.venv\\Scripts\\python.exe -m pip install -r "
-            "companion\\requirements.txt",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    except Exception as error:  # noqa: BLE001 - model download/load failure
-        print(f"Could not load the model: {error}", file=sys.stderr)
-        raise SystemExit(1)
+    # Wait for model to be ready (should be done or nearly done by now)
+    transcriber_future.join()
+    if transcriber_holder["error"]:
+        raise transcriber_holder["error"]
+    transcriber = transcriber_holder["transcriber"]
 
     injector = None
     if args.method != "none":

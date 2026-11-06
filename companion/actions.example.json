@@ -62,11 +62,39 @@
       "command": [
         "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",
         "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\companion\\ota_deploy.py",
-        "--restart-companion"
+        "--restart-companion-source"
       ],
       "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
-      "description": "Build firmware and/or LittleFS, then upload over authenticated Wi-Fi OTA, then restart companion",
+      "description": "Build firmware and/or LittleFS, then upload over authenticated Wi-Fi OTA, then restart companion from source",
       "interactive": true
+    },
+    "ota firmware": {
+      "command": [
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\companion\\ota_deploy.py",
+        "--environment",
+        "sticks3_ble_hid",
+        "--component",
+        "firmware",
+        "--restart-companion-source"
+      ],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Build and upload firmware over authenticated Wi-Fi OTA, then restart companion from source",
+      "interactive": false
+    },
+    "ota filesystem": {
+      "command": [
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",
+        "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\companion\\ota_deploy.py",
+        "--environment",
+        "sticks3_ble_hid",
+        "--component",
+        "filesystem",
+        "--restart-companion-source"
+      ],
+      "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
+      "description": "Build and upload filesystem over authenticated Wi-Fi OTA, then restart companion from source",
+      "interactive": false
     },
     "list bluetooth devices": {
       "command": [
