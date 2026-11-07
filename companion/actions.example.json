@@ -96,6 +96,11 @@
       "description": "Build and upload filesystem over authenticated Wi-Fi OTA, then restart companion from source",
       "interactive": false
     },
+    "magnifier": {
+      "command": ["magnify.exe"],
+      "description": "Open the Windows Magnifier",
+      "aliases": ["screen magnifier", "loupe"]
+    },
     "list bluetooth devices": {
       "command": [
         "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom\\.venv\\Scripts\\python.exe",

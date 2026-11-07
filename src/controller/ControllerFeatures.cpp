@@ -34,12 +34,55 @@ namespace controller
     constexpr float kDegToRad = 0.017453293f;
     constexpr uint8_t kKeyC = 0x06;
     constexpr uint8_t kKeyV = 0x19;
+    constexpr uint8_t kKeyM = 0x10;
     constexpr uint8_t kKeyEnter = 0x28;
     constexpr uint8_t kKeyEscape = 0x29;
     constexpr uint8_t kKeyPageUp = 0x4B;
     constexpr uint8_t kKeyArrowRight = 0x4F;
     constexpr uint8_t kKeyArrowLeft = 0x50;
+    constexpr uint8_t kKeyArrowDown = 0x51;
+    constexpr uint8_t kKeyArrowUp = 0x52;
     constexpr uint8_t kKeyPageDown = 0x4E;
+    constexpr uint8_t kKeypadMinus = 0x56;
+    constexpr uint8_t kKeypadPlus = 0x57;
+    constexpr uint8_t kModifierLeftControl = 0x01;
+    constexpr uint8_t kModifierLeftAlt = 0x04;
+    constexpr uint8_t kModifierLeftGui = 0x08;
+    constexpr uint8_t kModifierControlAlt =
+        kModifierLeftControl | kModifierLeftAlt;
+
+    // Windows Magnifier shortcuts: Win+keypad +/- zooms, Ctrl+Alt+arrows pan,
+    // Win+Esc closes, and Ctrl+Alt+M cycles full/lens/docked view.
+    constexpr uint32_t kMagnifierZoomRepeatMs = 220;
+    constexpr uint32_t kMagnifierPanRepeatMs = 130;
+    constexpr float kMagnifierPanMinDps = 12.0f;
+
+    // Air mouse tuning. The gyro supplies angular velocity; the exponential
+    // filter removes hand tremor while keeping the pointer responsive. The
+    // scales are pixels per degree of controller rotation: a comfortable
+    // 90-degree wrist turn must be able to cross a large desktop.
+    constexpr float kAirMouseDeadzoneDps = 2.0f;
+    constexpr float kAirMouseSmoothingSeconds = 0.045f;
+    constexpr float kAirMouseStopDps = 0.2f;
+    constexpr float kAirMouseBoostDps = 300.0f;
+    constexpr float kMotionScales[] = {5.0f, 8.0f, 12.0f, 18.0f,
+                                       26.0f, 36.0f, 50.0f};
+    constexpr uint32_t kMotionAdjustRepeatMs = 300;
+
+    // Picker order; kept separate from the persisted Mode values.
+    // VoiceCommand is intentionally excluded from the picker (use joystick hold).
+    constexpr ControllerFeatures::Mode kModeOrder[] = {
+        ControllerFeatures::Mode::Mouse,
+        ControllerFeatures::Mode::AirMouse,
+        ControllerFeatures::Mode::Navigation,
+        ControllerFeatures::Mode::Magnifier,
+        ControllerFeatures::Mode::Microphone,
+        ControllerFeatures::Mode::Dpi,
+        ControllerFeatures::Mode::Orientation,
+    };
+    static_assert(sizeof(kModeOrder) / sizeof(kModeOrder[0]) ==
+                      ControllerFeatures::kModeCount - 1,
+                  "mode picker order must include every mode except VoiceCommand");
 
     int8_t axisToMouse(int16_t value, uint8_t dpiLevel)
     {
@@ -88,7 +131,71 @@ namespace controller
       }
     }
 
+    float removeDeadzone(float value, float deadzone)
+    {
+      const float magnitude = fabsf(value);
+      if (magnitude <= deadzone)
+      {
+        return 0.0f;
+      }
+      return value > 0.0f ? magnitude - deadzone : deadzone - magnitude;
+    }
+
+    int8_t clampMouseDelta(float value)
+    {
+      if (value > 127.0f)
+      {
+        return 127;
+      }
+      if (value < -127.0f)
+      {
+        return -127;
+      }
+      return static_cast<int8_t>(value);
+    }
+
   } // namespace
+
+  constexpr uint8_t kPickerModeCount = 7;
+
+  uint8_t ControllerFeatures::modeOrderIndex(Mode mode)
+  {
+    for (uint8_t index = 0; index < kPickerModeCount; ++index)
+    {
+      if (kModeOrder[index] == mode)
+      {
+        return index;
+      }
+    }
+    return 0;
+  }
+
+  ControllerFeatures::Mode ControllerFeatures::modeAtOrderIndex(uint8_t index)
+  {
+    return kModeOrder[index % kPickerModeCount];
+  }
+
+  const char *ControllerFeatures::modeName(Mode mode)
+  {
+    switch (mode)
+    {
+    case Mode::Mouse:
+      return "mouse";
+    case Mode::Navigation:
+      return "navigation";
+    case Mode::Orientation:
+      return "orientation";
+    case Mode::Dpi:
+      return "dpi";
+    case Mode::Microphone:
+      return "microphone";
+    case Mode::AirMouse:
+      return "air mouse";
+    case Mode::Magnifier:
+      return "magnifier";
+    }
+    return "unknown";
+  }
 
   bool ControllerFeatures::begin()
   {
@@ -129,16 +236,23 @@ namespace controller
     const uint8_t savedFlipX = preferences.getUChar("flipX", 0);
     const uint8_t savedFlipY = preferences.getUChar("flipY", 0);
     const uint8_t savedDpi = preferences.getUChar("dpi", 3);
+    const uint8_t savedMotion = preferences.getUChar("motion", 3);
+    const uint8_t savedMotionFlipX = preferences.getUChar("mflipX", 0);
+    const uint8_t savedMotionFlipY = preferences.getUChar("mflipY", 0);
     preferences.end();
-    if (savedRotation > 3 || savedMode > 4 || savedFlipX > 1 ||
-        savedFlipY > 1 || savedDpi > 6)
+    if (savedRotation > 3 || savedMode >= kModeCount || savedFlipX > 1 ||
+        savedFlipY > 1 || savedDpi > 6 || savedMotion > 6 ||
+        savedMotionFlipX > 1 || savedMotionFlipY > 1)
     {
-      Serial.printf("[controller] invalid saved settings: rotation=%u mode=%u flipX=%u flipY=%u dpi=%u\n",
+      Serial.printf("[controller] invalid saved settings: rotation=%u mode=%u flipX=%u flipY=%u dpi=%u motion=%u mflipX=%u mflipY=%u\n",
                     static_cast<unsigned>(savedRotation),
                     static_cast<unsigned>(savedMode),
                     static_cast<unsigned>(savedFlipX),
                     static_cast<unsigned>(savedFlipY),
-                    static_cast<unsigned>(savedDpi));
+                    static_cast<unsigned>(savedDpi),
+                    static_cast<unsigned>(savedMotion),
+                    static_cast<unsigned>(savedMotionFlipX),
+                    static_cast<unsigned>(savedMotionFlipY));
       _errorMessage = "INVALID SETTINGS";
       return false;
     }
@@ -150,6 +264,9 @@ namespace controller
     _pendingFlipX = _flipX;
     _pendingFlipY = _flipY;
     _dpiLevel = savedDpi;
+    _motionLevel = savedMotion;
+    _motionFlipX = savedMotionFlipX != 0;
+    _motionFlipY = savedMotionFlipY != 0;
     _mode = static_cast<Mode>(savedMode);
     _lastValidInputAt = millis();
     return true;
@@ -194,6 +311,9 @@ namespace controller
     state.navigationMode = _mode == Mode::Navigation;
     state.dpiMode = _mode == Mode::Dpi;
     state.micMode = _mode == Mode::Microphone;
+    state.airMouseMode = _mode == Mode::AirMouse;
+    state.magnifierMode = _mode == Mode::Magnifier;
+    state.magnifierOpen = _magnifierOpen;
     state.modePickerActive = _modePickerActive;
     state.selectedMode = _selectedMode;
     state.micSubscribed = _micAudio.subscribed();
@@ -202,9 +322,14 @@ namespace controller
     state.demoMode = _mode == Mode::Orientation;
     state.orientationSaved = _orientationSaved;
     state.dpiSaved = _dpiSaved;
+    state.motionSaved = _motionSaved;
+    state.motionFlipSaved = _motionFlipSaved;
     state.flipX = _mode == Mode::Orientation ? _pendingFlipX : _flipX;
     state.flipY = _mode == Mode::Orientation ? _pendingFlipY : _flipY;
+    state.motionFlipX = _motionFlipX;
+    state.motionFlipY = _motionFlipY;
     state.dpiLevel = _dpiLevel;
+    state.motionLevel = _motionLevel;
     state.batteryLevel = _batteryLevel;
     state.joystickError = _joystickError;
     state.pendingBaseRotation = _pendingBaseRotation;
@@ -285,6 +410,43 @@ namespace controller
     return true;
   }
 
+  bool ControllerFeatures::saveMotionLevel()
+  {
+    Preferences preferences;
+    if (!preferences.begin("blehid", false))
+    {
+      Serial.println("[controller] failed to open NVS to save motion speed");
+      return false;
+    }
+    const size_t written = preferences.putUChar("motion", _motionLevel);
+    preferences.end();
+    if (written != sizeof(uint8_t))
+    {
+      Serial.println("[controller] failed to persist motion speed");
+      return false;
+    }
+    return true;
+  }
+
+  bool ControllerFeatures::saveMotionFlips()
+  {
+    Preferences preferences;
+    if (!preferences.begin("blehid", false))
+    {
+      Serial.println("[controller] failed to open NVS to save motion flips");
+      return false;
+    }
+    const size_t writtenX = preferences.putUChar("mflipX", _motionFlipX ? 1 : 0);
+    const size_t writtenY = preferences.putUChar("mflipY", _motionFlipY ? 1 : 0);
+    preferences.end();
+    if (writtenX != sizeof(uint8_t) || writtenY != sizeof(uint8_t))
+    {
+      Serial.println("[controller] failed to persist motion flips");
+      return false;
+    }
+    return true;
+  }
+
   bool ControllerFeatures::saveMode(Mode mode)
   {
     Preferences preferences;
@@ -321,6 +483,11 @@ namespace controller
 
     _mode = mode;
     _havePendingJoystickClick = false;
+    _haveMouseReport = false;
+    _motionVelocityX = 0.0f;
+    _motionVelocityY = 0.0f;
+    _motionRemainderX = 0.0f;
+    _motionRemainderY = 0.0f;
     if (_mode == Mode::Orientation)
     {
       _pendingBaseRotation = _baseRotation;
@@ -338,7 +505,20 @@ namespace controller
     if (_mode == Mode::Dpi)
     {
       _dpiSaved = true;
+      _motionSaved = true;
       _dpiStickCentered = true;
+      _motionStickCentered = true;
+    }
+    if (_mode == Mode::AirMouse)
+    {
+      _motionSaved = true;
+      _motionFlipSaved = true;
+      _airMouseStickCentered = true;
+    }
+    if (_mode == Mode::Magnifier)
+    {
+      _lastMagnifierZoomAt = millis();
+      _lastMagnifierPanAt = millis();
     }
     _orientationInitialized = false;
     _yaw = 0.0f;
@@ -346,15 +526,13 @@ namespace controller
     {
       Serial.println("[controller] mode changed for this session only");
     }
-    static const char *const modeNames[] = {
-        "mouse", "navigation", "orientation", "dpi", "microphone"};
-    Serial.printf("[controller] mode: %s\n",
-                  modeNames[static_cast<uint8_t>(_mode)]);
+    Serial.printf("[controller] mode: %s\n", modeName(_mode));
   }
 
   void ControllerFeatures::toggleMicrophoneMode()
   {
-    const bool enterMic = _mode != Mode::Microphone;
+    const bool enterMic =
+        _mode != Mode::Microphone;
     applyMode(enterMic ? Mode::Microphone : _micReturnMode);
     Serial.printf("[controller] quick switch: %s\n",
                   enterMic ? "microphone" : "previous mode");
@@ -368,6 +546,42 @@ namespace controller
     Serial.printf("[controller] pending joystick flip: X=%u Y=%u\n",
                   static_cast<unsigned>(_pendingFlipX),
                   static_cast<unsigned>(_pendingFlipY));
+  }
+
+  void ControllerFeatures::toggleMotionFlip(bool flipX)
+  {
+    bool &flip = flipX ? _motionFlipX : _motionFlipY;
+    flip = !flip;
+    _motionFlipSaved = saveMotionFlips();
+    _motionVelocityX = 0.0f;
+    _motionVelocityY = 0.0f;
+    _motionRemainderX = 0.0f;
+    _motionRemainderY = 0.0f;
+    Serial.printf("[controller] motion flip: X=%u Y=%u (%s)\n",
+                  static_cast<unsigned>(_motionFlipX),
+                  static_cast<unsigned>(_motionFlipY),
+                  _motionFlipSaved ? "saved" : "not saved");
+  }
+
+  void ControllerFeatures::adjustMotionLevel(int32_t direction, uint32_t now)
+  {
+    if (direction > 0 && _motionLevel < 6)
+    {
+      ++_motionLevel;
+    }
+    else if (direction < 0 && _motionLevel > 0)
+    {
+      --_motionLevel;
+    }
+    else
+    {
+      return;
+    }
+    _lastMotionAdjustAt = now;
+    _motionSaved = saveMotionLevel();
+    Serial.printf("[controller] motion speed level %u (%s)\n",
+                  static_cast<unsigned>(_motionLevel),
+                  _motionSaved ? "saved" : "not saved");
   }
 
   void ControllerFeatures::updateButtons(uint32_t now)
@@ -421,7 +635,7 @@ namespace controller
       _buttonASuppressed = true;
       const MicAudioStatus micStatus = _micAudio.status();
       const bool micBusy =
-          _mode == Mode::Microphone &&
+          (_mode == Mode::Microphone) &&
           (micStatus == MicAudioStatus::Recording ||
            micStatus == MicAudioStatus::Sending);
       if (!micBusy)
@@ -440,6 +654,14 @@ namespace controller
       else if (_mode == Mode::Microphone)
       {
         _micAudio.toggleClipRecording();
+      }
+      else if (_mode == Mode::AirMouse)
+      {
+        toggleMotionFlip(true);
+      }
+      else if (_mode == Mode::Magnifier)
+      {
+        zoomMagnifier(true);
       }
       else if (_mode == Mode::Navigation)
       {
@@ -461,6 +683,14 @@ namespace controller
       else if (_mode == Mode::Microphone)
       {
         _micAudio.cancel();
+      }
+      else if (_mode == Mode::AirMouse)
+      {
+        toggleMotionFlip(false);
+      }
+      else if (_mode == Mode::Magnifier)
+      {
+        zoomMagnifier(false);
       }
       else if (_mode == Mode::Navigation)
       {
@@ -526,11 +756,9 @@ namespace controller
     if (now - _lastJoystickLogAt >= 1000)
     {
       _lastJoystickLogAt = now;
-      static const char *const modeNames[] = {
-          "mouse", "navigation", "orientation", "dpi", "microphone"};
       Serial.printf("[joystick] x=%d y=%d button=%s mode=%s\n", joystick.x,
                     joystick.y, joystick.buttonPressed ? "pressed" : "released",
-                    modeNames[static_cast<uint8_t>(_mode)]);
+                    modeName(_mode));
     }
     if (_havePendingJoystickClick &&
         now - _lastJoystickClickAt > kDoubleClickWindowMs)
@@ -556,7 +784,7 @@ namespace controller
         now - _joystickPressedAt >= kModeHoldMs)
     {
       _modePickerActive = true;
-      _selectedMode = static_cast<uint8_t>(_mode);
+      _selectedMode = modeOrderIndex(_mode);
       _modePickerStickCentered =
           std::abs(x) < kJoystickCenterThreshold &&
           std::abs(y) < kJoystickCenterThreshold;
@@ -576,7 +804,7 @@ namespace controller
                std::abs(y) >= kJoystickOrientationThreshold)
       {
         _selectedMode = static_cast<uint8_t>(
-            (_selectedMode + (y > 0 ? 1 : 4)) % 5);
+            (_selectedMode + (y > 0 ? 1 : kPickerModeCount - 1)) % kPickerModeCount);
         _modePickerStickCentered = false;
       }
 
@@ -588,7 +816,7 @@ namespace controller
         }
         else if (now - _joystickPressedAt <= kClickMaxMs)
         {
-          const Mode selected = static_cast<Mode>(_selectedMode);
+          const Mode selected = modeAtOrderIndex(_selectedMode);
           _modePickerActive = false;
           applyMode(selected);
         }
@@ -664,10 +892,23 @@ namespace controller
                       _dpiSaved ? "saved" : "not saved");
       }
 
+      if (std::abs(y) < kJoystickCenterThreshold)
+      {
+        _motionStickCentered = true;
+      }
+      else if (_motionStickCentered &&
+               std::abs(y) >= kJoystickOrientationThreshold &&
+               now - _lastMotionAdjustAt >= 250)
+      {
+        adjustMotionLevel(y < 0 ? 1 : -1, now);
+        _motionStickCentered = false;
+      }
+
       if (!joystick.buttonPressed && _lastJoystickButton &&
           !_joystickHoldHandled && now - _joystickPressedAt <= kClickMaxMs)
       {
         _dpiSaved = saveDpiLevel();
+        _motionSaved = saveMotionLevel();
       }
       _lastJoystickButton = joystick.buttonPressed;
       _haveMouseReport = false;
@@ -680,6 +921,7 @@ namespace controller
     {
       _micAudio.toggleLive();
     }
+
     if (!joystick.buttonPressed && _lastJoystickButton &&
         !_joystickHoldHandled &&
         now - _joystickPressedAt <= kClickMaxMs)
@@ -697,6 +939,18 @@ namespace controller
       }
     }
     _lastJoystickButton = joystick.buttonPressed;
+
+    if (_mode == Mode::AirMouse)
+    {
+      handleAirMouseJoystick(x, y, now);
+      return;
+    }
+
+    if (_mode == Mode::Magnifier)
+    {
+      handleMagnifierJoystick(x, y, now);
+      return;
+    }
 
     if (_mode == Mode::Navigation)
     {
@@ -774,10 +1028,216 @@ namespace controller
       _yaw += 2.0f * PI;
     }
 
-    if (_mode != Mode::Orientation)
+    if (_modePickerActive)
+    {
+      // Selecting a mode must not move the pointer or pan the Magnifier.
+      return;
+    }
+
+    if (_mode == Mode::AirMouse)
+    {
+      handleAirMouse(gyroX, gz, dt);
+    }
+    else if (_mode == Mode::Magnifier)
+    {
+      handleMagnifierMotion(gyroX, gz, dt, now);
+    }
+    else if (_mode != Mode::Orientation)
     {
       handleGesture(gyroX, gyroY, now);
     }
+  }
+
+  void ControllerFeatures::updateMotionRates(float gyroX, float gyroZ, float dt)
+  {
+    // Horizontal movement comes from yaw; vertical movement comes from the
+    // base-rotated pitch axis. The same filtered rates feed both Air Mouse and
+    // Magnifier panning so their feel stays consistent.
+    float rawX = gyroZ;
+    float rawY = -gyroX;
+    if (_motionFlipX)
+    {
+      rawX = -rawX;
+    }
+    if (_motionFlipY)
+    {
+      rawY = -rawY;
+    }
+    rawX = removeDeadzone(rawX, kAirMouseDeadzoneDps);
+    rawY = removeDeadzone(rawY, kAirMouseDeadzoneDps);
+
+    const float alpha = 1.0f - expf(-dt / kAirMouseSmoothingSeconds);
+    _motionVelocityX += alpha * (rawX - _motionVelocityX);
+    _motionVelocityY += alpha * (rawY - _motionVelocityY);
+    if (fabsf(_motionVelocityX) < kAirMouseStopDps)
+    {
+      _motionVelocityX = 0.0f;
+    }
+    if (fabsf(_motionVelocityY) < kAirMouseStopDps)
+    {
+      _motionVelocityY = 0.0f;
+    }
+  }
+
+  void ControllerFeatures::handleAirMouse(float gyroX, float gyroZ, float dt)
+  {
+    updateMotionRates(gyroX, gyroZ, dt);
+
+    const float speed = sqrtf(_motionVelocityX * _motionVelocityX +
+                              _motionVelocityY * _motionVelocityY);
+    // Fast flicks get a gentle boost so a wrist turn can cross the whole
+    // desktop, while small movements stay precise.
+    const float boost =
+        1.0f + std::min(speed, kAirMouseBoostDps) / kAirMouseBoostDps;
+    const float scale =
+        kMotionScales[std::min<uint8_t>(_motionLevel, 6)] * boost;
+
+    _motionRemainderX += _motionVelocityX * scale * dt;
+    _motionRemainderY += _motionVelocityY * scale * dt;
+    _motionRemainderX =
+        std::max(-254.0f, std::min(254.0f, _motionRemainderX));
+    _motionRemainderY =
+        std::max(-254.0f, std::min(254.0f, _motionRemainderY));
+
+    const int8_t dx = clampMouseDelta(_motionRemainderX);
+    const int8_t dy = clampMouseDelta(_motionRemainderY);
+    if (dx != 0 || dy != 0 || !_haveMouseReport)
+    {
+      _hid.sendMouseReport(0, dx, dy);
+      _haveMouseReport = true;
+      _motionRemainderX -= dx;
+      _motionRemainderY -= dy;
+    }
+  }
+
+  void ControllerFeatures::handleAirMouseJoystick(int32_t x, int32_t y,
+                                                  uint32_t now)
+  {
+    (void)x;
+    const int32_t magnitude = std::abs(y);
+    if (magnitude < kJoystickCenterThreshold)
+    {
+      _airMouseStickCentered = true;
+      return;
+    }
+    if (magnitude < kJoystickOrientationThreshold)
+    {
+      return;
+    }
+
+    // Change one level per deflection, then repeat while the stick is held.
+    if (_airMouseStickCentered ||
+        now - _lastMotionAdjustAt >= kMotionAdjustRepeatMs)
+    {
+      adjustMotionLevel(y < 0 ? 1 : -1, now);
+      _airMouseStickCentered = false;
+      _lastMotionAdjustAt = now;
+    }
+  }
+
+  void ControllerFeatures::toggleMagnifier()
+  {
+    if (_magnifierOpen)
+    {
+      _hid.sendHotkey(kModifierLeftGui, kKeyEscape);
+      _magnifierOpen = false;
+      Serial.println("[magnifier] closed");
+    }
+    else
+    {
+      _hid.sendHotkey(kModifierLeftGui, kKeypadPlus);
+      _magnifierOpen = true;
+      _motionVelocityX = 0.0f;
+      _motionVelocityY = 0.0f;
+      _motionRemainderX = 0.0f;
+      _motionRemainderY = 0.0f;
+      _lastMagnifierPanAt = millis();
+      Serial.println("[magnifier] opened");
+    }
+  }
+
+  void ControllerFeatures::zoomMagnifier(bool zoomIn)
+  {
+    if (!_magnifierOpen && !zoomIn)
+    {
+      return;
+    }
+    _hid.sendHotkey(kModifierLeftGui,
+                    zoomIn ? kKeypadPlus : kKeypadMinus);
+    if (zoomIn)
+    {
+      _magnifierOpen = true;
+    }
+    Serial.printf("[magnifier] zoom %s\n", zoomIn ? "in" : "out");
+  }
+
+  void ControllerFeatures::panMagnifier(uint8_t key)
+  {
+    if (!_magnifierOpen)
+    {
+      return;
+    }
+    _hid.sendHotkey(kModifierControlAlt, key);
+  }
+
+  void ControllerFeatures::handleMagnifierJoystick(int32_t x, int32_t y,
+                                                   uint32_t now)
+  {
+    const bool zoomIn = y <= -kJoystickOrientationThreshold;
+    const bool zoomOut = y >= kJoystickOrientationThreshold;
+    if ((zoomIn || zoomOut) &&
+        now - _lastMagnifierZoomAt >= kMagnifierZoomRepeatMs)
+    {
+      zoomMagnifier(zoomIn);
+      _lastMagnifierZoomAt = now;
+    }
+
+    const bool panLeft = x <= -kJoystickOrientationThreshold;
+    const bool panRight = x >= kJoystickOrientationThreshold;
+    if ((panLeft || panRight) &&
+        now - _lastMagnifierPanAt >= kMagnifierPanRepeatMs)
+    {
+      panMagnifier(panLeft ? kKeyArrowLeft : kKeyArrowRight);
+      _lastMagnifierPanAt = now;
+    }
+  }
+
+  void ControllerFeatures::handleMagnifierMotion(float gyroX, float gyroZ,
+                                                 float dt, uint32_t now)
+  {
+    updateMotionRates(gyroX, gyroZ, dt);
+    if (!_magnifierOpen)
+    {
+      return;
+    }
+
+    const float magnitude =
+        std::max(fabsf(_motionVelocityX), fabsf(_motionVelocityY));
+    if (magnitude < kMagnifierPanMinDps)
+    {
+      return;
+    }
+
+    // Reuse the Air Mouse sensitivity and flips. Higher levels pan faster.
+    const float levelScale =
+        kMotionScales[std::min<uint8_t>(_motionLevel, 6)] / kMotionScales[3];
+    const float effective = magnitude * levelScale;
+    const float interval =
+        std::max(70.0f, std::min(220.0f, 220.0f - effective * 0.55f));
+    if (now - _lastMagnifierPanAt < static_cast<uint32_t>(interval))
+    {
+      return;
+    }
+
+    if (fabsf(_motionVelocityX) >= fabsf(_motionVelocityY))
+    {
+      panMagnifier(_motionVelocityX > 0.0f ? kKeyArrowRight : kKeyArrowLeft);
+    }
+    else
+    {
+      panMagnifier(_motionVelocityY > 0.0f ? kKeyArrowDown : kKeyArrowUp);
+    }
+    _lastMagnifierPanAt = now;
   }
 
   void ControllerFeatures::handleGesture(float gyroX, float gyroY,
@@ -801,8 +1261,8 @@ namespace controller
 
     if (fabsf(gyroX) >= kGesturePitchDps)
     {
-      // Inverted: front (tilt away, gyroX > 0) = cancel, back (tilt toward, gyroX < 0) = accept
-      const uint8_t key = gyroX > 0.0f ? kKeyEscape : kKeyEnter;
+      // Front (tilt away, gyroX > 0) = accept (Enter), back (tilt toward, gyroX < 0) = cancel (Escape)
+      const uint8_t key = gyroX < 0.0f ? kKeyEnter : kKeyEscape;
       _hid.sendKey(key);
       Serial.printf("[gesture] front/back -> %s\n",
                     key == kKeyEnter ? "accept" : "cancel");
@@ -825,9 +1285,23 @@ namespace controller
 
   void ControllerFeatures::handleJoystickClick(bool doubleClick)
   {
+    if (_mode == Mode::Magnifier)
+    {
+      if (doubleClick)
+      {
+        _hid.sendHotkey(kModifierControlAlt, kKeyM);
+        Serial.println("[magnifier] cycle view");
+      }
+      else
+      {
+        toggleMagnifier();
+      }
+      return;
+    }
+
     if (_mode == Mode::Navigation)
     {
-      // Inverted: single click = cancel (Escape), double click = accept (Enter)
+      // Double click = accept (Enter), single click = cancel (Escape)
       const uint8_t key = doubleClick ? kKeyEnter : kKeyEscape;
       _hid.sendKey(key);
       Serial.printf("[controller] navigation %s -> %s\n",

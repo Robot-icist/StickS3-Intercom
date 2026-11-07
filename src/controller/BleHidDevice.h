@@ -24,6 +24,7 @@ class BleHidDevice {
 
   void sendKey(uint8_t key);
   void sendHotkey(uint8_t key);
+  void sendHotkey(uint8_t modifier, uint8_t key);
   void sendKeyboardReport(uint8_t modifier, uint8_t key);
   void sendMouseReport(uint8_t buttons, int8_t dx, int8_t dy,
                        int8_t wheel = 0);

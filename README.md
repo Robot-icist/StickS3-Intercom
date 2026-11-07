@@ -100,7 +100,7 @@ Pair the device with the computer when prompted; Windows can reuse an existing
 BLE HID pairing even when the StickS3 is already connected as a keyboard and
 mouse. The firmware uses Just Works BLE pairing, which encrypts the link but
 does not verify a peer with a passkey, so run OTA only in a trusted area.
-Left/right gestures or arrow keys change popup selections; front/Enter accepts,
+Left/right gestures or arrow keys change popup selections; Front/Enter accepts,
 back/Escape cancels. While a choice popup is open, say an option to highlight
 it, then use the StickS3 to accept it. Never expose the OTA service or setup
 access point to an untrusted network.
@@ -222,39 +222,75 @@ subscription state. Startup retries the Joystick2 I2C probe and keeps running
 if the stick is temporarily unavailable, allowing sensor reads to recover
 once the bus is ready.
 
-Hold the joystick button for about one second to cycle through Mouse,
-Navigation, IMU Orientation, Pointer Speed, and Microphone modes. The selected
-mode is saved in NVS. Hold BtnA for about 0.7 seconds to jump directly between
-Microphone mode and the previous mode without cycling through the modes in
-between; the joystick hold still cycles every mode.
+Hold the joystick button for about one second to open the mode picker. Move
+the stick up/down to choose Mouse, Air Mouse, Magnifier, Navigation, Voice
+Action, Microphone, Pointer/Motion Speed, or IMU Orientation; click to select
+and BtnB to cancel. The selected mode is saved in NVS. Hold BtnA for about 0.7
+seconds to jump directly between Microphone mode and the previous mode without
+cycling through the modes in between. The joystick hold opens the mode picker
+from every mode except Microphone, where holding the stick streams live audio.
 Navigation maps joystick up/down to scrolling, a click/double-click to
 Enter/Escape, and BtnA/BtnB to Page Up/Page Down. Approval-menu IMU gestures
-work in Mouse and Navigation modes.
+work in Mouse, Navigation, Microphone, Voice Action, and Pointer/Motion Speed
+modes, but not in IMU Orientation, Air Mouse, or Magnifier.
+
+Air Mouse mode turns the StickS3 into a gyro pointer. Tilt the controller to
+move the mouse; yaw drives horizontal motion and pitch drives vertical motion.
+The pointer uses a deadzone plus an exponential filter so small hand tremor
+does not jitter the cursor while fast movements stay responsive, and fast
+flicks get a gentle speed boost so a normal wrist turn can cross the whole
+desktop. Move the stick up/down to change the seven motion levels; the level is
+saved to NVS immediately. Joystick click and double-click are left and right
+click. BtnA flips the gyro X axis and BtnB flips the gyro Y axis; both flips
+are saved and are also used by Magnifier mode. The saved base rotation applies
+to the gyro axes, and the joystick X/Y flips from IMU Orientation stay
+independent. In Pointer/Motion Speed mode, move the joystick left/right for
+joystick pointer speed and up/down for gyro motion speed. Only angular velocity
+is used, so the pointer does not drift like an integrated orientation.
+
+Magnifier mode controls the built-in Windows Magnifier through normal HID
+keyboard shortcuts, so no companion or overlay process is needed. Click the
+joystick to open or close it (Win+Plus / Win+Esc), double-click to cycle
+full-screen, lens, and docked views (Ctrl+Alt+M), move the stick up/down to
+zoom, and move it left/right or tilt the controller to pan (Ctrl+Alt+arrows).
+BtnA and BtnB also zoom in and out. Gyro panning reuses the Air Mouse motion
+filter, deadzone, X/Y flips, and seven-level sensitivity, so tune the feel in
+Air Mouse mode. The screen shows the controller's local open/closed state,
+which can drift if the Magnifier is closed from the keyboard; click once to
+clear the stale state and again to reopen. These are standard Windows Magnifier
+shortcuts, so the feature works with the stock Magnifier application.
+
+Voice Action mode uses the same BLE microphone stream for command-only speech.
+Click the joystick or press BtnA to start and stop a recording; BtnB cancels.
+The audio is tagged as a command rather than dictation, so the companion routes
+it through the voice-action matcher and never pastes it into the focused field.
+Bare action names work ("magnifier", "git status"), as do the usual explicit
+prefixes such as "Run action: ...". This mode needs the companion running with
+`--voice-commands` (the Windows desktop companion enables it by default). See
+the action examples below for a ready-made "magnifier" action.
 
 In IMU Orientation mode, move the joystick left/right to rotate the
 controller's base orientation in 90-degree steps. Press BtnA to flip joystick
 X and BtnB to flip joystick Y; the flips are independent of base rotation and
-apply to both pointer movement and scrolling. Click the joystick to save all
-three calibration settings to NVS. The saved rotation is applied to the
-joystick axes and IMU gestures, so controls can be aligned with how the
-StickS3 is held. The cube fuses gyro motion with the accelerometer for stable
-roll and pitch; yaw is integrated from the gyro and will gradually drift
+apply to joystick pointer movement and scrolling. Air Mouse and Magnifier use
+their own saved X/Y motion flips (BtnA/BtnB in Air Mouse mode). Click the
+joystick to save all three calibration settings to NVS. The saved rotation is
+applied to the joystick axes and IMU gestures, so controls can be aligned with
+how the StickS3 is held. The cube fuses gyro motion with the accelerometer for
+stable roll and pitch; yaw is integrated from the gyro and will gradually drift
 because this board has no magnetometer.
-
-In Pointer Speed mode, move the joystick left/right to choose one of seven
-bounded pointer-speed levels. Changes are saved to NVS immediately; click the
-joystick to retry saving if NVS reports an error. The default level preserves
-the previous mouse sensitivity.
 
 Microphone mode exposes a custom BLE GATT audio stream (not a standard
 Bluetooth microphone profile). Connect the companion receiver below and
 subscribe to its audio characteristic. Click the joystick to toggle live
 streaming; press BtnA to start a clip and press it again to stop recording and
 send it; BtnB cancels the current operation. Hold BtnA to return to the mode
-you came from, or hold the joystick button to cycle to the next mode (Mouse). If the companion disconnects during audio, capture/transmission
-stops and the controller returns to its ready state. Clips are limited to 8
-seconds. Live and clip capture are mutually exclusive. Audio is mono, 8 kHz IMA ADPCM;
-the StickS3 sends a framed notification every 20 ms. The BLE link must
+you came from. The joystick is reserved for live audio in this mode, so open
+the mode picker from another mode. If the companion disconnects during audio,
+capture and transmission stop and the controller returns to its ready state.
+Clips are limited to 8 seconds. Live and clip capture are mutually exclusive.
+Audio is mono, 8 kHz IMA ADPCM; the StickS3 sends a framed notification every
+20 ms. The BLE link must
 negotiate an ATT MTU of at least 93 bytes for each frame to fit in one
 notification. Audio is delivered only to a companion that has connected and
 subscribed; Windows will not list this custom service as a microphone, so the
@@ -265,13 +301,13 @@ stale GATT subscription.
 
 The starter Python companion at `companion/ble_mic_receiver.py` finds the
 StickS3, subscribes to the custom service, decodes the frames, and saves each
-live session or clip as a WAV file. It first checks whether the StickS3 is
-already connected to Windows, then falls back to an advertisement scan and, if
-needed, other paired devices. This matters because a StickS3 that is connected
-to the PC as a HID device stops advertising: the companion reuses that existing
-Windows BLE connection for the microphone GATT service, so mouse and keyboard
-input keep working at the same time. On Windows, pair the StickS3 first, then
-run:
+live session, clip, or voice command as a WAV file. It first checks whether the
+StickS3 is already connected to Windows, then falls back to an advertisement
+scan and, if needed, other paired devices. This matters because a StickS3 that
+is connected to the PC as a HID device stops advertising: the companion reuses
+that existing Windows BLE connection for the microphone GATT service, so mouse
+and keyboard input keep working at the same time. On Windows, pair the StickS3
+first, then run:
 
 ```powershell
 py -m venv .venv
@@ -429,7 +465,7 @@ several times real time without PyTorch, Transformers, or FFmpeg. The StickS3
 stream is 8 kHz, so `onnx-asr` resamples it to the 16 kHz the model expects;
 accuracy is therefore limited by the narrowband microphone, not by the model.
 
-Both capture modes of the receiver are handled, because both produce a complete
+All capture modes of the receiver are handled, because each produces a complete
 WAV in the same folder:
 
 - `stickS3_0001_live.wav` - the streamed push-to-talk audio. The firmware sends
@@ -439,6 +475,9 @@ WAV in the same folder:
   appears when the stream ends.
 - `stickS3_0001_clip.wav` - audio recorded on the StickS3 and replayed at 1x
   real time. It is transcribed once the clip transfer completes.
+- `stickS3_0001_command.wav` - a Voice Action mode utterance. It is transcribed
+  and routed as a command instead of pasted as dictation. Command recordings
+  are processed even when `--modes live` or `--modes clip` limits dictation.
 
 Install the extra dependencies once, then use one of the
 [one-line launchers](#one-line-launchers) above (`--transcribe` chains the two
@@ -516,6 +555,11 @@ prefixes:
 - **“Copilot: …”** (or “GitHub Copilot: …”) runs a GitHub Copilot CLI prompt.
 - **“Run action: …”** runs a named, locally allowlisted action.
 
+The controller's Voice Action mode marks its recordings as commands. That lets
+you say a bare action name such as “magnifier” or “git status” without a
+prefix; unmatched command speech is reported and is never pasted as dictation.
+If voice routing is not enabled, command recordings are skipped.
+
 Unprefixed speech remains ordinary dictation. With `--partial-live`, partial
 transcripts are never sent to an agent or action; routing only happens after
 the final transcript is ready. Agent prompts and non-interactive local actions
@@ -558,8 +602,8 @@ prompts; follow those prompts in the companion terminal.
 
 Local actions are an exact-name allowlist, not shell commands derived from
 speech. The example includes read-only Git checks, companion tests, BLE device
-listing, controller firmware build, Windows companion packaging, and an
-interactive authenticated OTA deployer. It is
+listing, controller firmware build, Windows companion packaging, a Windows
+Magnifier launcher, and an interactive authenticated OTA deployer. It is
 tailored to the current Windows checkout path; edit its `cwd` and executable
 paths if your repository or PlatformIO installation is elsewhere. Install it
 to the per-user location:
@@ -603,9 +647,9 @@ Useful options:
 - `--partial-live` enables live updates, `--partial-interval SECONDS` changes
   how often they are attempted (default 1.5), and `--partial-min-audio SECONDS`
   sets how much new audio is needed (default 0.6).
-- `--modes all|live|clip` picks which capture mode is dictated (default `all`),
-  and `--watch PATH` / `--pattern TEXT` change the folder and file name filter
-  (default `recordings` and `stickS3`).
+- `--modes all|live|clip|command` picks which capture mode is dictated (default
+  `all`), and `--watch PATH` / `--pattern TEXT` change the folder and file name
+  filter (default `recordings` and `stickS3`).
 - `--model nemo-parakeet-tdt-0.6b-v2` switches to the English-only Parakeet,
   `--quantization fp32` to full precision, and `--device auto|cuda|directml|cpu`
   selects an execution provider. `auto` prefers NVIDIA CUDA on supported
@@ -637,7 +681,8 @@ The custom audio service UUID is
 `e5d10001-3c9b-4f6a-9b2d-2a7f4510a001`; its notify characteristic is
 `e5d10002-3c9b-4f6a-9b2d-2a7f4510a001`. Each notification starts with a
 6-byte little-endian header: protocol version (1), flags (live `0x01`, clip
-`0x02`, end `0x80`), 16-bit sequence number, and 16-bit payload length. Audio
+`0x02`, voice command `0x04`, end `0x80`), 16-bit sequence number, and 16-bit
+payload length. Audio
 frames contain an 84-byte IMA ADPCM block: signed 16-bit initial predictor,
 step index, reserved byte, then low-nibble-first ADPCM samples. End packets
 have a zero payload length. The receiver and firmware implement this initial
@@ -675,12 +720,32 @@ them when changing BLE setup, input handling, or companion behavior:
   `_hid->manufacturer("M5Stack")`.
 - Keep microphone controls independent of host HID readiness: in Microphone
   mode, a short joystick click toggles live audio; BtnA starts/stops a clip;
-  BtnB cancels; holding BtnA returns to the previous mode; holding the joystick
-  cycles to the next mode. Do not return
-  early from microphone-mode joystick handling before processing click/release
-  and hold transitions. If the GATT companion disconnects during live capture,
-  recording, or clip transmission, stop the operation and return the mic to
-  idle so the user can still switch modes.
+  BtnB cancels; holding BtnA returns to the previous mode. The joystick hold
+  is reserved for live audio in Microphone mode, so the mode picker is opened
+  from other modes. Do not return early from microphone-mode joystick handling
+  before processing click/release and hold transitions. If the GATT companion
+  disconnects during live capture, recording, or clip transmission, stop the
+  operation and return the mic to idle so the user can still switch modes.
+- Voice Action mode is command-only: a joystick click or BtnA toggles a
+  recording, BtnB cancels, and the frames carry the voice-command flag `0x04`
+  instead of the clip flag. The receiver must keep writing these as
+  `stickS3_*_command.wav`, and the transcriber must route them through the
+  voice-action matcher without ever pasting unmatched text. Do not reuse the
+  clip flag for commands.
+- Air Mouse mode derives pointer velocity from gyro yaw and pitch. Keep the
+  deadzone and exponential smoothing, keep fractional pixel accumulation so
+  slow motion still moves the cursor, and keep the fast-flick boost plus
+  pixels-per-degree scale table so a wrist turn can cross a large desktop. Do
+  not run approval-menu gestures in this mode. The seven-level motion
+  sensitivity is stored in NVS as `motion`; the joystick up/down axis adjusts it
+  live, and BtnA/BtnB toggle the independent gyro X/Y flips stored as `mflipX`
+  and `mflipY`.
+- Magnifier mode uses the standard Windows Magnifier shortcuts: Win+keypad
+  plus/minus to zoom, Ctrl+Alt+arrows to pan, Win+Esc to close, and Ctrl+Alt+M
+  to cycle views. Gyro panning must reuse the Air Mouse motion filter, X/Y
+  flips, and `motion` level so both modes feel the same. Keep the HID report's
+  GUI/Control/Alt modifiers and the keypad plus/minus usages intact; do not
+  replace this with a companion-only overlay unless the mode is redesigned.
 - Audio starts only after a companion is connected and subscribed to the
   custom notification characteristic. The companion must keep that BLE
   connection open; its receiver saves the incoming audio as WAV and is not a
@@ -703,7 +768,17 @@ handling together. After a change, build with
    Verify pointer movement and a keyboard action, not just BLE connection.
 3. Connect the Python companion and subscribe; test joystick-click live
    start/stop and BtnA clip record/send. Confirm audio arrives and is saved.
-4. Disconnect the companion during a mic operation; confirm the operation
+4. In Voice Action mode, record "magnifier" and confirm the companion runs the
+   configured action instead of pasting text. Confirm an unknown command is
+   reported and not pasted.
+5. In Air Mouse mode, confirm slow and fast tilts move the pointer smoothly,
+   stick up/down changes the level, A/B flip X/Y, and a normal wrist turn can
+   reach every edge of the desktop. Confirm the level and flips persist after a
+   restart.
+6. In Magnifier mode, confirm zoom, pan, view cycling, and open/close use the
+   stock Windows Magnifier shortcuts, and that gyro panning follows the Air
+   Mouse level and X/Y flips.
+7. Disconnect the companion during a mic operation; confirm the operation
    stops and holding the joystick still leaves Microphone mode.
 
 Compilation alone does not validate Windows HID enumeration, pairing, or BLE

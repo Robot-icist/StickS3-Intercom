@@ -129,7 +129,7 @@ def _companion_python():
     )
 
 
-def _deploy_action(component=None, environment=None):
+def _deploy_action(component=None, environment=None, restart_companion=False):
     def run(source, target, env):
         command = [str(_companion_python()), "-u", str(DEPLOYER)]
         if component is not None:
@@ -139,6 +139,8 @@ def _deploy_action(component=None, environment=None):
         )
         if target_environment is not None:
             command.extend(("--environment", target_environment))
+        if restart_companion:
+            command.append("--restart-companion-source")
         task_description = target_environment or "interactive environment"
         print(
             "[OTA] Starting authenticated OTA deployer for "
@@ -265,7 +267,7 @@ env.AddTarget(
     group=GROUP,
     name="ota_firmware",
     dependencies=None,
-    actions=_deploy_action("firmware"),
+    actions=_deploy_action("firmware", restart_companion=True),
     title="OTA: firmware",
     description="Build and upload this PlatformIO environment's firmware.",
 )
@@ -273,7 +275,7 @@ env.AddTarget(
     group=GROUP,
     name="ota_littlefs",
     dependencies=None,
-    actions=_deploy_action("filesystem"),
+    actions=_deploy_action("filesystem", restart_companion=True),
     title="OTA: LittleFS",
     description="Build and upload this PlatformIO environment's LittleFS image.",
 )
@@ -281,7 +283,7 @@ env.AddTarget(
     group=GROUP,
     name="ota_firmware_littlefs",
     dependencies=None,
-    actions=_deploy_action("both"),
+    actions=_deploy_action("both", restart_companion=True),
     title="OTA: firmware and LittleFS",
     description="Build and upload both images for this PlatformIO environment.",
 )
@@ -289,7 +291,7 @@ env.AddTarget(
     group=GROUP,
     name="ota_deploy",
     dependencies=None,
-    actions=_deploy_action("firmware", "sticks3_ble_hid"),
+    actions=_deploy_action("firmware", "sticks3_ble_hid", restart_companion=True),
     title="OTA: BLE HID firmware (default)",
     description="Build and upload StickS3 BLE HID firmware over authenticated OTA.",
 )

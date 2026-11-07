@@ -1,6 +1,41 @@
-"""Route explicitly prefixed final transcripts to local agent harnesses."""
+"""Route explicitly prefixed final transcripts to local agent harnesses.
 
-from __future__ import annotations
+Voice Command Prefixes for OpenCode:
+====================================
+- "OpenCode: <prompt>"        - Pick/create session, then send prompt (with confirmation)
+- "OpenCode <prompt>"         - Same as above (no colon needed)
+- "opencode: <prompt>"        - Same as above
+- "opencode <prompt>"         - Same as above
+- "do <prompt>"               - Auto-use most recent OpenCode session (no prompt)
+- "opencode do <prompt>"      - Auto-use most recent OpenCode session (no prompt)
+- "opencode" (alone)          - Pick/create session interactively (no prompt sent)
+
+OpenCode Session Handling:
+==========================
+- First run with "OpenCode:" or "opencode:" prompts to pick from existing sessions or create new
+- Selected session ID is remembered for the companion process lifetime
+- "do <prompt>" and "opencode do <prompt>" automatically use the last session (no picker)
+- If no session exists yet, falls back to creating a new one
+- New session ID is captured from `opencode run` output and stored for future "do" commands
+
+Other Agent Prefixes:
+=====================
+- "Claude Code: <prompt>" / "Claude: <prompt>" - Uses `claude -p --resume <session>`
+- "GitHub Copilot: <prompt>" / "Copilot: <prompt>" - Uses `copilot --prompt <prompt>`
+- "Run action: <name>" - Runs configured local actions from actions.json
+
+Dictation:
+==========
+- Unprefixed speech is returned as dictation text for clipboard injection
+- "Dictate: <text>" - Explicitly forces dictation mode
+
+Local Actions (from actions.json):
+==================================
+- "Run action: <name>" - Runs configured commands (git status, OTA, builds, etc.)
+- Spoken names are fuzzy-matched (ignores case, spacing, punctuation, accents)
+- "O T A update" matches "ota update" action
+- French aliases supported (e.g., "état du dépôt" for "git status")
+"""
 
 import json
 import os
@@ -19,6 +54,62 @@ from typing import Optional
 from interactive_prompts import prompt_choice
 
 
+# Recent models tracking
+_RECENT_MODELS_FILE = "recent_models.json"
+_MAX_RECENT_MODELS = 8
+
+
+def _recent_models_path(session_dir: Path | None = None) -> Path | None:
+    """Get the path to the recent models JSON file."""
+    if session_dir is None:
+        session_dir = Path(os.environ.get("STICKS3_INTERACTION_DIR", ""))
+        if not session_dir:
+            return None
+    return session_dir / _RECENT_MODELS_FILE
+
+
+def _load_recent_models(session_dir: Path | None = None) -> list[str]:
+    """Load recently used models from the JSON file."""
+    path = _recent_models_path(session_dir)
+    if path is None or not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(m) for m in data if isinstance(m, str)][:_MAX_RECENT_MODELS]
+    except (json.JSONDecodeError, OSError):
+        pass
+    return []
+
+
+def _save_recent_models(models: list[str], session_dir: Path | None = None) -> None:
+    """Save recently used models to the JSON file."""
+    path = _recent_models_path(session_dir)
+    if path is None:
+        return
+    try:
+        # Keep only unique models, most recent first
+        seen = set()
+        unique = []
+        for m in models:
+            if m not in seen:
+                seen.add(m)
+                unique.append(m)
+        path.write_text(json.dumps(unique[:_MAX_RECENT_MODELS], ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _add_recent_model(model: str, session_dir: Path | None = None) -> None:
+    """Add a model to the recent models list."""
+    recent = _load_recent_models(session_dir)
+    # Move to front if already exists
+    if model in recent:
+        recent.remove(model)
+    recent.insert(0, model)
+    _save_recent_models(recent, session_dir)
+
+
 @dataclass(frozen=True)
 class Intent:
     target: str
@@ -27,6 +118,8 @@ class Intent:
 
 _PREFIXES = (
     ("run action", "action"),
+    ("do", "opencode_auto"),
+    ("opencode do", "opencode_auto"),
     ("open code", "opencode"),
     ("opencode", "opencode"),
     ("claude code", "claude"),
@@ -79,7 +172,13 @@ def _spoken_action_request(transcript: str) -> Optional[str]:
     folded = re.sub(r"\b([a-z])\s+([a-z])\s+(?=[a-z])", r"\1\2", folded)
     folded = re.sub(r"\b([a-z])\s+([a-z])\b", r"\1\2", folded)
     match = _SPOKEN_ACTION.match(folded)
-    return match.group(1).strip(" \t,.;:!?") if match is not None else None
+    if match is None:
+        return None
+    action_name = match.group(1).strip(" \t,.;:!?")
+    # Require minimum length to avoid false positives from short utterances
+    if len(action_name) < 4:
+        return None
+    return action_name
 
 
 def parse_intent(transcript: str) -> Intent:
@@ -88,6 +187,12 @@ def parse_intent(transcript: str) -> Intent:
     for prefix, target in _PREFIXES:
         if target == "opencode":
             pattern = r"^\s*open[\s_-]*code(?=$|[\s,:;.-])"
+        elif target == "opencode_auto":
+            # Match "opencode do" or just "do"
+            if prefix == "opencode do":
+                pattern = r"^\s*open[\s_-]*code\s+do(?=$|[\s,:;.-])"
+            else:  # "do"
+                pattern = r"^\s*do(?=$|[\s,:;.-])"
         else:
             words = re.escape(prefix).replace(r"\ ", r"[\s_-]*")
             pattern = rf"^\s*{words}(?=$|[\s,:;.-])"
@@ -104,15 +209,35 @@ def default_actions_path() -> Path:
     return base / "StickS3Intercom" / "actions.json"
 
 
-def _agent_cli_options() -> dict[str, int | None]:
+def _agent_cli_options(interactive: bool = False) -> dict[str, int | None]:
     if "STICKS3_INTERACTION_DIR" not in os.environ:
         return {}
-    return {
-        "stdin": None,
-        "stdout": None,
-        "stderr": None,
-        "creationflags": getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
-    }
+    if interactive:
+        # New session: run in a new console window on Windows for proper TTY
+        # This allows OpenCode to run interactively with tool approvals
+        if sys.platform == "win32":
+            return {
+                "creationflags": subprocess.CREATE_NEW_CONSOLE,
+            }
+        else:
+            return {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+            }
+    else:
+        # Existing session: run non-interactively, capture output
+        return {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
 
 
 @dataclass(frozen=True)
@@ -244,6 +369,48 @@ class VoiceCommandRouter:
                 return None
         return self._handle_intent(intent)
 
+    def route_command(self, transcript: str) -> None:
+        """Route a command-only capture; bare speech is matched to an action.
+
+        This is used for the controller's Voice Action mode, where every
+        utterance is a command and no dictation text should be pasted.
+        """
+        if self._forward_to_active_prompt(transcript):
+            return
+
+        try:
+            self.actions = load_actions(self.actions_path)
+        except ValueError as error:
+            print(f"Could not reload voice actions: {error}", file=sys.stderr)
+            return
+
+        intent = parse_intent(transcript)
+        action_request = (
+            intent.content if intent.target == "action"
+            else _spoken_action_request(transcript)
+            if intent.target == "dictation" else None
+        )
+        if action_request is not None:
+            matched_name = self._match_action_name(action_request)
+            if matched_name is not None:
+                intent = Intent("action", matched_name)
+            elif intent.target == "action":
+                intent = Intent("action", action_request)
+        if intent.target == "dictation":
+            # There is no dictation in command mode, so treat the whole
+            # utterance as a bare action name.
+            matched_name = self._match_action_name(transcript)
+            if matched_name is None:
+                print(f"No matching voice action for {transcript!r}.")
+                return
+            intent = Intent("action", matched_name)
+        if intent.target == "action" and intent.content:
+            action = self.actions.get(intent.content.casefold())
+            if action is not None and action.interactive:
+                self._start_confirmed_interactive_action(intent.content)
+                return
+        self._handle_intent(intent)
+
     def handle(self, transcript: str) -> Optional[str]:
         """Return dictation text, or route a prefixed command and return None."""
         if self._forward_to_active_prompt(transcript):
@@ -274,6 +441,8 @@ class VoiceCommandRouter:
             return None
         if intent.target == "opencode":
             self._send_to_opencode(intent.content)
+        elif intent.target == "opencode_auto":
+            self._send_to_opencode_auto(intent.content)
         elif intent.target == "claude":
             self._send_to_claude(intent.content)
         elif intent.target == "copilot":
@@ -317,9 +486,9 @@ class VoiceCommandRouter:
             ((score, name) for name, score in best_by_action.items()),
             reverse=True,
         )
-        if not candidates or candidates[0][0] < 0.84:
+        if not candidates or candidates[0][0] < 0.88:
             return None
-        if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.08:
+        if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.10:
             return None
         return candidates[0][1]
 
@@ -413,6 +582,59 @@ class VoiceCommandRouter:
                 f"OpenCode command {self.opencode_command!r} was not found on PATH"
             )
         return executable
+
+    def _list_opencode_models(self) -> list[str]:
+        """List all available OpenCode models."""
+        executable = self._opencode_cli()
+        try:
+            result = subprocess.run(
+                [executable, "models"],
+                cwd=self.opencode_cwd or Path.cwd(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"Could not list OpenCode models: {error}", file=sys.stderr)
+            return []
+        if result.returncode != 0:
+            print(f"OpenCode model listing failed: {result.stderr.strip()}", file=sys.stderr)
+            return []
+        models = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return models
+
+    def _get_last_opencode_model(self) -> Optional[str]:
+        """Get the model used in the most recent OpenCode session."""
+        executable = self._opencode_cli()
+        try:
+            result = subprocess.run(
+                [executable, "session", "list", "--format", "json"],
+                cwd=self.opencode_cwd or Path.cwd(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            import json
+            sessions = json.loads(result.stdout)
+            if isinstance(sessions, list) and sessions:
+                # Sessions are typically returned with most recent first
+                for session in sessions:
+                    if isinstance(session, dict):
+                        model = session.get("model")
+                        if isinstance(model, dict) and "id" in model:
+                            return model["id"]
+                        elif isinstance(model, str):
+                            return model
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+        return None
 
     def _choose_opencode_session(self) -> str:
         if self.opencode_session:
@@ -519,15 +741,27 @@ class VoiceCommandRouter:
         if not session_id:
             print("OpenCode command cancelled.")
             return
-        if session_id == "__new__":
+        is_new_session = session_id == "__new__"
+        if is_new_session:
             session_display = "new session"
             if not self._confirm(f"OpenCode {session_display}", prompt):
                 return
-            command = [
-                self._opencode_cli(),
-                "run",
-                prompt,
-            ]
+            # Use last model from last session, or let OpenCode use its default
+            model = self._get_last_opencode_model()
+            if model:
+                command = [
+                    self._opencode_cli(),
+                    "run",
+                    "--model",
+                    model,
+                    prompt,
+                ]
+            else:
+                command = [
+                    self._opencode_cli(),
+                    "run",
+                    prompt,
+                ]
         else:
             session_display = f"session {session_id}"
             if not self._confirm(f"OpenCode {session_display}", prompt):
@@ -541,9 +775,79 @@ class VoiceCommandRouter:
             ]
         print(f"Starting OpenCode CLI ({session_display}). Review and approve any tool permissions it requests.")
         try:
-            options = _agent_cli_options()
-            options["stderr"] = subprocess.PIPE
-            options["text"] = True
+            options = _agent_cli_options(interactive=is_new_session)
+            if not is_new_session:
+                options["stderr"] = subprocess.PIPE
+            result = subprocess.run(
+                command,
+                cwd=self.opencode_cwd or Path.cwd(),
+                timeout=self.timeout,
+                check=False,
+                **options,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(f"Could not run OpenCode: {error}") from error
+        if result.returncode != 0:
+            detail = "\n".join(
+                output.strip()
+                for output in (result.stdout, result.stderr)
+                if output and output.strip()
+            )
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"OpenCode CLI failed with exit code {result.returncode}{suffix}"
+            )
+        # If we created a new session and captured stdout, get the session ID
+        if is_new_session and result.stdout:
+            try:
+                output_data = json.loads(result.stdout.strip())
+                if isinstance(output_data, dict) and isinstance(output_data.get("id"), str):
+                    self.opencode_session = output_data["id"]
+                    directory = output_data.get("directory")
+                    if isinstance(directory, str) and directory:
+                        self.opencode_cwd = Path(directory)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+    def _send_to_opencode_auto(self, prompt: str) -> None:
+        """Send to OpenCode using the last known session (no prompt, no picker).
+        
+        If no session exists yet, creates a new one automatically.
+        """
+        session_id = self.opencode_session
+        if session_id is None:
+            # No session yet - check if there are existing sessions to pick from
+            session_id = self._get_most_recent_opencode_session()
+            if session_id is None:
+                # No sessions exist, create a new one
+                session_id = "__new__"
+            else:
+                # Store the found session for future use
+                self.opencode_session = session_id
+        
+        is_new_session = session_id == "__new__"
+        if is_new_session:
+            session_display = "new session"
+            # No confirmation for auto mode - just run with default model
+            command = [
+                self._opencode_cli(),
+                "run",
+                prompt,
+            ]
+        else:
+            session_display = f"session {session_id}"
+            command = [
+                self._opencode_cli(),
+                "run",
+                "--session",
+                session_id,
+                prompt,
+            ]
+        print(f"Starting OpenCode CLI ({session_display}). Review and approve any tool permissions it requests.")
+        try:
+            options = _agent_cli_options(interactive=is_new_session)
+            if not is_new_session:
+                options["stderr"] = subprocess.PIPE
             result = subprocess.run(
                 command,
                 cwd=self.opencode_cwd or Path.cwd(),
@@ -564,7 +868,7 @@ class VoiceCommandRouter:
                 f"OpenCode CLI failed with exit code {result.returncode}{suffix}"
             )
         # If we created a new session, capture its ID for future use
-        if session_id == "__new__" and result.stdout:
+        if is_new_session and result.stdout:
             try:
                 # opencode run outputs the session ID when creating a new session
                 output_data = json.loads(result.stdout.strip())
@@ -575,6 +879,40 @@ class VoiceCommandRouter:
                         self.opencode_cwd = Path(directory)
             except (json.JSONDecodeError, AttributeError):
                 pass
+
+    def _get_most_recent_opencode_session(self) -> Optional[str]:
+        """Get the most recent OpenCode session ID without prompting."""
+        executable = self._opencode_cli()
+        try:
+            result = subprocess.run(
+                [executable, "session", "list", "--format", "json"],
+                cwd=self.opencode_cwd or Path.cwd(),
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"Could not list OpenCode sessions: {error}", file=sys.stderr)
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            sessions = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(sessions, list) or not sessions:
+            return None
+        # Return the first (most recent) valid session ID
+        for session in sessions:
+            if isinstance(session, dict) and isinstance(session.get("id"), str):
+                session_id = session["id"]
+                # Also update cwd if available
+                directory = session.get("directory")
+                if isinstance(directory, str) and directory:
+                    self.opencode_cwd = Path(directory)
+                return session_id
+        return None
 
     def _send_to_claude(self, prompt: str) -> None:
         executable = shutil.which(self.claude_command)

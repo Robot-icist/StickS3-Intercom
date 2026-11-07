@@ -227,7 +227,10 @@ void WifiOtaService::startConfigPortal() {
   WiFi.setHostname(_hostname);
   char accessPointName[40];
   snprintf(accessPointName, sizeof(accessPointName), "%s-Setup", _hostname);
-  if (!WiFi.softAP(accessPointName, _otaPassword.c_str())) {
+  
+  // Use a simple fixed password for the setup AP, keep OTA password for OTA only
+  constexpr const char* kSetupApPassword = "blehid123456";
+  if (!WiFi.softAP(accessPointName, kSetupApPassword)) {
     Serial.println("[wifi] Could not start setup access point");
     return;
   }
@@ -279,7 +282,7 @@ void WifiOtaService::startConfigPortal() {
   });
   _portal.begin();
   _portalStarted = true;
-  Serial.printf("[wifi] Setup AP %s; password is the per-device OTA password; open http://%s/\n",
+  Serial.printf("[wifi] Setup AP %s; password: blehid123456; open http://%s/\n",
                 accessPointName, portalIp.toString().c_str());
 }
 

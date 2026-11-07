@@ -5,13 +5,15 @@ The script polls a folder for finished WAV files, runs each one through
 NVIDIA Parakeet TDT (via onnx-asr, ONNX Runtime, CPU) and then pastes the
 transcript into whatever text field currently has the caret.
 
-Both capture modes of the receiver are handled:
+All capture modes of the receiver are handled:
 
 * ``stickS3_0001_live.wav`` - audio streamed while the microphone is open;
   the firmware sends an end marker when the stream stops, the receiver
   closes the file, and the whole session is transcribed at once.
 * ``stickS3_0001_clip.wav`` - audio recorded on the StickS3 and replayed at
   1x real time; it is transcribed when the clip transfer completes.
+* ``stickS3_0001_command.wav`` - a Voice Action mode utterance. It is routed
+  through the voice-action matcher and never pasted as dictation.
 
 Run the BLE receiver in another terminal to produce the files:
 
@@ -24,7 +26,8 @@ Or let the receiver start this script for you:
 
 Then focus the text field you want to dictate into, record on the StickS3,
 and the transcript appears at the caret a moment after the capture ends.
-Use --modes live or --modes clip to dictate only one of the two.
+Use --modes live or --modes clip to dictate only one of the two. Command
+recordings are always routed when voice commands are enabled.
 
 Add --partial-live to transcribe a live stream while it is still open and
 rewrite the field in place every couple of seconds; the final pass after the
@@ -695,10 +698,17 @@ class Watcher:
             if self.pattern and self.pattern.lower() not in entry.name.lower():
                 continue
             # The receiver names files stickS3_0001_live.wav (streamed while
-            # talking) and stickS3_0001_clip.wav (recorded, then sent).
-            if self.modes != "all" and not entry.stem.casefold().endswith(
-                f"_{self.modes}"
-            ):
+            # talking), stickS3_0001_clip.wav (recorded, then sent), and
+            # stickS3_0001_command.wav (a voice-action utterance). Command
+            # files are explicit and are processed even when dictation is
+            # limited to one mode.
+            stem = entry.stem.casefold()
+            is_command = stem.endswith("_command")
+            if self.modes == "command":
+                if not is_command:
+                    continue
+            elif (self.modes != "all" and not is_command
+                  and not stem.endswith(f"_{self.modes}")):
                 continue
             try:
                 stat = entry.stat()
@@ -726,7 +736,7 @@ class Watcher:
 
     def live_candidates(self) -> list[Path]:
         """Return live recordings that are not transcribed yet."""
-        if self.modes == "clip":
+        if self.modes in ("clip", "command"):
             return []
         signatures = self._signatures()
         paths: list[Path] = []
@@ -904,12 +914,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--modes",
-        choices=("all", "live", "clip"),
+        choices=("all", "live", "clip", "command"),
         default="all",
         help=(
             "which capture modes to transcribe: live is the streamed "
-            "push-to-talk audio, clip is the recorded-then-sent audio "
-            "(default: all)"
+            "push-to-talk audio, clip is the recorded-then-sent audio, and "
+            "command is a voice-action utterance (default: all; command "
+            "recordings are always routed when voice commands are enabled)"
         ),
     )
     parser.add_argument(
@@ -1104,7 +1115,9 @@ def main() -> None:
 
     jobs: queue.Queue[Optional[Job]] = queue.Queue()
     stop = threading.Event()
-    partials_enabled = args.partial_live and args.modes != "clip"
+    partials_enabled = args.partial_live and args.modes not in (
+        "clip", "command"
+    )
     live_state: dict[str, LiveState] = {}
 
     def worker() -> None:
@@ -1354,6 +1367,18 @@ def process_job(
             )
         except OSError as error:
             print(f"  could not save text: {error}")
+
+    is_command = job.path.stem.casefold().endswith("_command")
+    if is_command:
+        if voice_router is None:
+            print("  voice command ignored: start the companion with "
+                  "--voice-commands")
+            return
+        try:
+            voice_router.route_command(text)
+        except RuntimeError as error:
+            print(f"  voice command failed: {error}", file=sys.stderr)
+        return
 
     if voice_router is not None:
         intent = parse_intent(text)

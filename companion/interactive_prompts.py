@@ -105,6 +105,7 @@ def prompt_choice(
         raise ValueError("Voice aliases must match the number of choices.")
 
     import tkinter as tk
+    from tkinter import ttk
 
     root = tk.Tk()
     active_session = session_dir or _session_dir()
@@ -128,6 +129,8 @@ def prompt_choice(
     answer: int | None = None
     buttons: list[tk.Button] = []
     voice_after_id: str | None = None
+    canvas_ref: tk.Canvas | None = None  # reference for cleanup
+
     def render_selection() -> None:
         for index, button in enumerate(buttons):
             active = index == selected
@@ -143,6 +146,37 @@ def prompt_choice(
         nonlocal selected
         selected = (selected + delta) % len(choices)
         render_selection()
+        # Scroll to keep selected item visible in the canvas viewport
+        if canvas_ref is not None and buttons:
+            # Get the selected button's position in the canvas
+            button = buttons[selected]
+            # Update idle tasks to ensure geometry is calculated
+            canvas_ref.update_idletasks()
+            # Get button's y position relative to canvas
+            y = button.winfo_y()
+            button_height = button.winfo_height()
+            # Get canvas visible area
+            canvas_height = canvas_ref.winfo_height()
+            # Calculate scroll fraction to center the button in view
+            # Scroll so button is in the middle of visible area
+            target_y = y - (canvas_height - button_height) // 2
+            # Clamp to valid range
+            scroll_region = canvas_ref.bbox("all")
+            if scroll_region:
+                max_y = scroll_region[3] - canvas_height
+                if max_y > 0:
+                    fraction = max(0.0, min(1.0, target_y / max_y))
+                    canvas_ref.yview_moveto(fraction)
+
+    def cleanup_bindings() -> None:
+        """Unbind global mouse wheel events before window destruction."""
+        if canvas_ref is not None:
+            try:
+                canvas_ref.unbind_all("<MouseWheel>")
+                canvas_ref.unbind_all("<Button-4>")
+                canvas_ref.unbind_all("<Button-5>")
+            except Exception:
+                pass
 
     def finish(index: int | None) -> None:
         nonlocal answer, voice_after_id
@@ -153,6 +187,8 @@ def prompt_choice(
                 root.after_cancel(voice_after_id)
             except Exception:
                 pass
+        # Unbind global events BEFORE destroying the window
+        cleanup_bindings()
         root.destroy()
 
     def choose(index: int) -> None:
@@ -202,8 +238,37 @@ def prompt_choice(
         voice_after_id = root.after(100, read_voice_choices)
 
     try:
-        card = tk.Frame(root, background="#101827", padx=28, pady=24)
-        card.pack(fill="both", expand=True)
+        # Main container with scrolling support
+        main_frame = tk.Frame(root, background="#101827")
+        main_frame.pack(fill="both", expand=True)
+
+        # Canvas with scrollbar for long lists
+        canvas = tk.Canvas(main_frame, background="#101827", highlightthickness=0)
+        canvas_ref = canvas  # store reference for cleanup
+        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        card = tk.Frame(canvas, background="#101827", padx=28, pady=24)
+        canvas_window = canvas.create_window((0, 0), window=card, anchor="nw")
+
+        def on_configure(event: tk.Event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        card.bind("<Configure>", on_configure)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+
+        # Mouse wheel scrolling
+        def on_mousewheel(event: tk.Event) -> None:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
         tk.Label(
             card,
             text=title,
@@ -238,7 +303,7 @@ def prompt_choice(
 
         tk.Label(
             card,
-            text="Left/Right or voice selects | Back/Enter accepts | Front/Esc cancels",
+            text="Left/Right or voice selects | Front/Enter accepts | Back/Esc cancels",
             font=("Segoe UI", 9),
             foreground="#94a3b8",
             background="#101827",
@@ -248,11 +313,15 @@ def prompt_choice(
         root.bind("<KeyPress>", on_key)
         root.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         root.update_idletasks()
+
+        # Limit max height to 80% of screen height
+        max_height = int(root.winfo_screenheight() * 0.8)
+        req_height = min(root.winfo_reqheight(), max_height)
         width = root.winfo_reqwidth()
-        height = root.winfo_reqheight()
         x = (root.winfo_screenwidth() - width) // 2
-        y = (root.winfo_screenheight() - height) // 2
-        root.geometry(f"{width}x{height}+{x}+{y}")
+        y = (root.winfo_screenheight() - req_height) // 2
+        root.geometry(f"{width}x{req_height}+{x}+{y}")
+
         voice_after_id = root.after(100, read_voice_choices)
         root.after(100, root.focus_force)
         root.mainloop()

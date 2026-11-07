@@ -1,12 +1,15 @@
 import asyncio
+import struct
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from ble_mic_receiver import (
+    FLAG_VOICE_COMMAND,
     MIC_COMPANION_UUID,
     MIC_STREAM_UUID,
+    Receiver,
     clear_existing_recordings,
     receive,
 )
@@ -19,6 +22,7 @@ class ClearExistingRecordingsTests(unittest.TestCase):
             recordings = (
                 "stickS3_0001_live.wav",
                 "stickS3_12_clip.wav",
+                "stickS3_13_command.wav",
             )
             for name in recordings:
                 (output / name).write_bytes(b"recording")
@@ -32,7 +36,7 @@ class ClearExistingRecordingsTests(unittest.TestCase):
 
             removed = clear_existing_recordings(output)
 
-            self.assertEqual(removed, 2)
+            self.assertEqual(removed, 3)
             self.assertTrue(all(not (output / name).exists() for name in recordings))
             self.assertTrue(unrelated.exists())
             self.assertTrue(transcript.exists())
@@ -44,6 +48,20 @@ class ClearExistingRecordingsTests(unittest.TestCase):
 
             self.assertEqual(clear_existing_recordings(output), 0)
             self.assertTrue(output.is_dir())
+
+
+class VoiceCommandFrameTests(unittest.TestCase):
+    def test_command_flag_creates_command_recording(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            receiver = Receiver(output)
+            packet = struct.pack("<BBHH", 1, FLAG_VOICE_COMMAND, 0, 84)
+            receiver.on_notification(None, bytearray(packet + bytes(84)))
+            receiver._close_segment()
+
+            self.assertTrue(
+                (output / "stickS3_0001_command.wav").is_file()
+            )
 
 
 class CompanionHeartbeatTests(unittest.IsolatedAsyncioTestCase):

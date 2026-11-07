@@ -42,6 +42,8 @@ class ParseIntentTests(unittest.TestCase):
                 "dictation",
                 "do not send this to an agent",
             ),
+            "do fix the bug": ("opencode_auto", "fix the bug"),
+            "opencode do fix the bug": ("opencode_auto", "fix the bug"),
         }
         for transcript, expected in cases.items():
             with self.subTest(transcript=transcript):
@@ -456,8 +458,13 @@ class VoiceCommandRouterTests(unittest.TestCase):
             )
             self.assertEqual(run.call_args_list[0].kwargs["cwd"], project)
             self.assertEqual(run.call_args_list[1].kwargs["cwd"], Path(temporary))
-            self.assertEqual(run.call_args_list[1].kwargs["stderr"], subprocess.PIPE)
-            self.assertTrue(run.call_args_list[1].kwargs["text"])
+            # Existing session: STICKS3_INTERACTION_DIR is set in test env, so non-interactive options
+            self.assertEqual(run.call_args_list[1].kwargs, {
+                "cwd": Path(temporary),
+                "timeout": 300,
+                "check": False,
+                "stderr": subprocess.PIPE,
+            })
 
     def test_opencode_can_create_new_session(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -466,7 +473,9 @@ class VoiceCommandRouterTests(unittest.TestCase):
             router = self.make_router(Path(temporary) / "missing.json")
             router.opencode_cwd = project
             with (
-                patch("builtins.input", side_effect=("1", "yes")),
+                patch.dict("os.environ", {"STICKS3_INTERACTION_DIR": ""}, clear=False),
+                patch("builtins.input", side_effect=("2", "yes")),  # session (2=Create new), confirm
+                patch("voice_actions.prompt_choice", side_effect=(1, 1)),  # session (1=Create new), confirm
                 patch(
                     "voice_actions.shutil.which",
                     return_value="opencode.cmd",
@@ -474,10 +483,21 @@ class VoiceCommandRouterTests(unittest.TestCase):
                 patch(
                     "voice_actions.subprocess.run",
                     side_effect=(
+                        # First call: session list for choosing session
                         subprocess.CompletedProcess(
-                            [], 0, stdout=json.dumps([]),
+                            [], 0, stdout=json.dumps([
+                                {"id": "existing-session", "title": "Existing", "directory": temporary}
+                            ]),
                             stderr="",
                         ),
+                        # Second call: session list for getting last model
+                        subprocess.CompletedProcess(
+                            [], 0, stdout=json.dumps([
+                                {"id": "old-session", "model": {"id": "opencode/claude-sonnet-5-5"}}
+                            ]),
+                            stderr="",
+                        ),
+                        # Third call: creating new session
                         subprocess.CompletedProcess(
                             [], 0,
                             stdout=json.dumps({
@@ -502,15 +522,141 @@ class VoiceCommandRouterTests(unittest.TestCase):
             ])
             self.assertEqual(run.call_args_list[1].args[0], [
                 "opencode.cmd",
+                "session",
+                "list",
+                "--format",
+                "json",
+            ])
+            self.assertEqual(run.call_args_list[2].args[0], [
+                "opencode.cmd",
                 "run",
+                "--model",
+                "opencode/claude-sonnet-5-5",
                 "summarize this project",
             ])
             self.assertNotIn(
-                "--auto", run.call_args_list[1].args[0]
+                "--auto", run.call_args_list[2].args[0]
             )
             self.assertNotIn(
-                "--session", run.call_args_list[1].args[0]
+                "--session", run.call_args_list[2].args[0]
             )
+
+    def test_opencode_auto_uses_existing_session_without_prompt(self) -> None:
+        """Test that 'do <prompt>' uses existing session without prompting."""
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            router.opencode_session = "existing-session-123"
+            with (
+                patch("voice_actions.shutil.which", return_value="opencode.cmd"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ) as run,
+            ):
+                router.handle("do fix the bug")
+
+            # Should not call session list
+            session_list_calls = [
+                call for call in run.call_args_list
+                if call.args[0][1] == "session"
+            ]
+            self.assertEqual(len(session_list_calls), 0)
+            # Should call run with existing session
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "opencode.cmd",
+                "run",
+                "--session",
+                "existing-session-123",
+                "fix the bug",
+            ])
+
+    def test_opencode_auto_finds_most_recent_session(self) -> None:
+        """Test that 'do <prompt>' finds most recent session when none stored."""
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            router.opencode_session = None
+            with (
+                patch("voice_actions.shutil.which", return_value="opencode.cmd"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    side_effect=(
+                        subprocess.CompletedProcess(
+                            [], 0, stdout=json.dumps([{
+                                "id": "recent-session-456",
+                                "title": "Recent Project",
+                                "directory": temporary,
+                            }]),
+                            stderr="",
+                        ),
+                        subprocess.CompletedProcess([], 0),
+                    ),
+                ) as run,
+            ):
+                router.handle("do fix the bug")
+
+            # First call should be session list
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "opencode.cmd",
+                "session",
+                "list",
+                "--format",
+                "json",
+            ])
+            # Second call should be run with found session
+            self.assertEqual(run.call_args_list[1].args[0], [
+                "opencode.cmd",
+                "run",
+                "--session",
+                "recent-session-456",
+                "fix the bug",
+            ])
+            # Session should be stored
+            self.assertEqual(router.opencode_session, "recent-session-456")
+
+    def test_opencode_auto_creates_new_when_no_sessions(self) -> None:
+        """Test that 'do <prompt>' creates new session when none exist."""
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            router.opencode_session = None
+            with (
+                patch("voice_actions.shutil.which", return_value="opencode.cmd"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    side_effect=(
+                        subprocess.CompletedProcess(
+                            [], 0, stdout=json.dumps([]),
+                            stderr="",
+                        ),
+                        subprocess.CompletedProcess(
+                            [], 0,
+                            stdout=json.dumps({
+                                "id": "new-session-789",
+                                "title": "New Session",
+                                "directory": temporary,
+                            }),
+                            stderr="",
+                        ),
+                    ),
+                ) as run,
+            ):
+                router.handle("do fix the bug")
+
+            # First call should be session list
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "opencode.cmd",
+                "session",
+                "list",
+                "--format",
+                "json",
+            ])
+            # Second call should be run without --session (new session, no model selection in auto mode)
+            self.assertEqual(run.call_args_list[1].args[0], [
+                "opencode.cmd",
+                "run",
+                "fix the bug",
+            ])
+            # New session should be stored
+            self.assertEqual(router.opencode_session, "new-session-789")
 
     def test_opencode_failure_includes_cli_stdout_and_stderr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -593,7 +739,11 @@ class VoiceCommandRouterTests(unittest.TestCase):
         choices = choose.call_args_list[0].args[2]
         self.assertIn("Project", choices[0])
         self.assertEqual(choices[-1], "Create new session")
-        self.assertIn("creationflags", run.call_args_list[1].kwargs)
+        # Existing session: non-interactive (no creationflags)
+        self.assertNotIn("creationflags", run.call_args_list[1].kwargs)
+        self.assertEqual(run.call_args_list[1].kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(run.call_args_list[1].kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(run.call_args_list[1].kwargs["stderr"], subprocess.PIPE)
 
     def test_claude_invocation_uses_argv_and_optional_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -642,6 +792,104 @@ class VoiceCommandRouterTests(unittest.TestCase):
             )
             self.assertNotIn("--allow-all-tools", run.call_args.args[0])
             self.assertFalse(run.call_args.kwargs.get("shell", False))
+
+    def test_route_command_runs_a_bare_action_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "magnifier": {
+                            "command": ["magnify.exe"],
+                            "description": "Open the Windows Magnifier",
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with (
+                patch("builtins.input", return_value="yes"),
+                patch("voice_actions.shutil.which", return_value="magnify.exe"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 0, stdout="", stderr=""
+                    ),
+                ) as run,
+            ):
+                router.route_command("open magnifier")
+
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0], ("magnify.exe",))
+
+    def test_route_command_does_not_paste_unmatched_speech(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "magnifier": {"command": ["magnify.exe"]}
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with patch("voice_actions.subprocess.run") as run:
+                router.route_command("explain the failing test")
+
+            run.assert_not_called()
+
+    def test_route_command_accepts_an_explicit_action_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "magnifier": {"command": ["magnify.exe"]}
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with (
+                patch("builtins.input", return_value="yes"),
+                patch("voice_actions.shutil.which", return_value="magnify.exe"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 0, stdout="", stderr=""
+                    ),
+                ) as run,
+            ):
+                router.route_command("run action: magnifier")
+
+            run.assert_called_once()
+
+    def test_route_command_opens_confirmation_for_an_interactive_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "actions.json"
+            config.write_text(
+                json.dumps({
+                    "actions": {
+                        "ota update": {
+                            "command": ["python", "ota_deploy.py"],
+                            "interactive": True,
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+            router = self.make_router(config)
+            with patch("voice_actions.threading.Thread") as thread:
+                router.route_command("ota update")
+
+            self.assertTrue(router._interactive_pending)
+            self.assertIsNone(router._interactive_process)
+            thread.assert_called_once()
+            session = router._interactive_session
+            self.assertIsNotNone(session)
+            session.rmdir()
 
     def test_invalid_action_config_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

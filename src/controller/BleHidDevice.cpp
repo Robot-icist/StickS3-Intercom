@@ -360,9 +360,13 @@ void BleHidDevice::sendKey(uint8_t key) {
 }
 
 void BleHidDevice::sendHotkey(uint8_t key) {
-  sendKeyboardReport(kModifierLeftControl, key);
+  sendHotkey(kModifierLeftControl, key);
+}
+
+void BleHidDevice::sendHotkey(uint8_t modifier, uint8_t key) {
+  sendKeyboardReport(modifier, key);
   delay(8);
-  sendKeyboardReport(kModifierLeftControl, 0);
+  sendKeyboardReport(modifier, 0);
   delay(8);
   sendKeyboardReport(0, 0);
 }

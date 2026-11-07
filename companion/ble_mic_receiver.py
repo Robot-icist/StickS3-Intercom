@@ -25,8 +25,9 @@ SAMPLES_PER_FRAME = 160
 HEADER_SIZE = 6
 FLAG_LIVE = 0x01
 FLAG_CLIP = 0x02
+FLAG_VOICE_COMMAND = 0x04
 FLAG_END = 0x80
-RECORDING_NAME = re.compile(r"stickS3_\d+_(?:live|clip)\.wav\Z")
+RECORDING_NAME = re.compile(r"stickS3_\d+_(?:live|clip|command)\.wav\Z")
 
 STEP_TABLE = (
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37,
@@ -123,7 +124,12 @@ class Receiver:
             print("Audio transmission ended.")
             return
 
-        mode = "live" if flags & FLAG_LIVE else "clip" if flags & FLAG_CLIP else None
+        mode = (
+            "live" if flags & FLAG_LIVE
+            else "clip" if flags & FLAG_CLIP
+            else "command" if flags & FLAG_VOICE_COMMAND
+            else None
+        )
         payload = bytes(data[HEADER_SIZE:])
         if mode is None or frame_size != len(payload):
             print("Ignoring malformed audio frame.")
