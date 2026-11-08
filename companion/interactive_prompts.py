@@ -282,7 +282,7 @@ def prompt_choice(
             font=("Segoe UI", 10),
             foreground="#94a3b8",
             background="#101827",
-            wraplength=500,
+            wraplength=600,
             justify="left",
         ).pack(anchor="w", pady=(8, 18))
 
@@ -314,12 +314,20 @@ def prompt_choice(
         root.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         root.update_idletasks()
 
-        # Limit max height to 80% of screen height
-        max_height = int(root.winfo_screenheight() * 0.8)
-        req_height = min(root.winfo_reqheight(), max_height)
-        width = root.winfo_reqwidth()
-        x = (root.winfo_screenwidth() - width) // 2
-        y = (root.winfo_screenheight() - req_height) // 2
+        # Keep a medium, readable size for short lists while using the
+        # scrollbar for genuinely long lists instead of tiny windows.
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        min_width = min(620, max(420, screen_width - 80))
+        max_width = max(min_width, screen_width - 80)
+        width = min(max(root.winfo_reqwidth(), min_width), max_width)
+        max_height = int(screen_height * 0.8)
+        min_height = min(360, max_height)
+        req_height = min(max(root.winfo_reqheight(), min_height), max_height)
+        x = (screen_width - width) // 2
+        y = (screen_height - req_height) // 2
+        root.minsize(min(520, width), min(280, req_height))
+        root.resizable(True, True)
         root.geometry(f"{width}x{req_height}+{x}+{y}")
 
         voice_after_id = root.after(100, read_voice_choices)
@@ -375,7 +383,7 @@ def prompt_text(
             font=("Segoe UI", 10),
             foreground="#94a3b8",
             background="#101827",
-            wraplength=500,
+            wraplength=600,
             justify="left",
         ).pack(anchor="w", pady=(8, 16))
         value = tk.StringVar(value=initial)
@@ -407,10 +415,12 @@ def prompt_text(
         root.bind("<Escape>", lambda _event: finish(None))
         root.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         root.update_idletasks()
-        width = root.winfo_reqwidth()
-        height = root.winfo_reqheight()
+        width = max(root.winfo_reqwidth(), 460)
+        height = max(root.winfo_reqheight(), 240)
         x = (root.winfo_screenwidth() - width) // 2
         y = (root.winfo_screenheight() - height) // 2
+        root.resizable(True, True)
+        root.minsize(420, 220)
         root.geometry(f"{width}x{height}+{x}+{y}")
         root.after(100, entry.focus_force)
         root.mainloop()

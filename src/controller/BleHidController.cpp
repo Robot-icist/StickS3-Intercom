@@ -43,10 +43,18 @@ void BleHidController::loop() {
   _micAudio.update(now);
   _wifiOta.loop();
 
+  if (_wifiOta.otaInProgress()) {
+    _features.resetIdleTimer();
+  }
+
   if (now - _lastRenderAt >= kRenderIntervalMs) {
     _lastRenderAt = now;
     ControllerViewState state = _features.viewState(_hid.connected());
     state.hidReady = _hid.reportsReady();
+    state.otaInProgress = _wifiOta.otaInProgress();
+    state.otaProgress = _wifiOta.otaProgress();
+    snprintf(state.otaStatus, sizeof(state.otaStatus), "%s",
+             _wifiOta.otaStatus());
     snprintf(state.deviceName, sizeof(state.deviceName), "%s",
              _wifiOta.hostname());
     const String ipAddress = _wifiOta.ipAddress();

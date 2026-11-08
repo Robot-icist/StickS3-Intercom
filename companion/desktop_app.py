@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,7 +61,37 @@ def opencode_working_directory() -> Path:
     return Path.home()
 
 
+def _example_actions_path() -> Path | None:
+    """Locate the bundled example actions file, if it is available."""
+    roots = {
+        Path(__file__).resolve().parent,
+        Path.cwd(),
+    }
+    if getattr(sys, "_MEIPASS", None):
+        roots.add(Path(sys._MEIPASS))
+    for root in roots:
+        for current in (root, *root.parents):
+            for relative in (
+                "actions.example.json",
+                Path("companion") / "actions.example.json",
+            ):
+                candidate = current / relative
+                if candidate.is_file():
+                    return candidate
+    return None
+
+
 def load_action_definitions(path: Path) -> dict[str, dict[str, object]]:
+    # Seed a missing per-user configuration from the bundled example so the
+    # dashboard starts with the full action list instead of an empty UI.
+    if not path.exists():
+        example = _example_actions_path()
+        if example is not None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(example, path)
+            except OSError:
+                pass
     try:
         configuration = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -97,6 +128,72 @@ def save_action_definitions(
         raise ValueError(f"Cannot save actions to {path}: {error}") from error
 
 
+def ensure_example_actions(path: Path) -> None:
+    # Merge built-in example actions into the per-user configuration.
+    if path != default_actions_path():
+        return
+    example = _example_actions_path()
+    if example is None:
+        return
+    try:
+        example_configuration = json.loads(
+            example.read_text(encoding="utf-8")
+        )
+        example_definitions = (
+            example_configuration.get("actions")
+            if isinstance(example_configuration, dict)
+            else None
+        )
+        if not isinstance(example_definitions, dict):
+            return
+    except (OSError, json.JSONDecodeError):
+        return
+
+    user_definitions: dict[str, object] = {}
+    if path.exists():
+        try:
+            user_configuration = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(user_configuration, dict) and isinstance(
+                user_configuration.get("actions"), dict
+            ):
+                user_definitions = user_configuration["actions"]
+        except (OSError, json.JSONDecodeError):
+            return
+
+    merged = dict(example_definitions)
+    for name, definition in user_definitions.items():
+        if isinstance(definition, dict):
+            merged[name] = dict(definition)
+        else:
+            merged[name] = definition
+    # OTA updates kill/restart companion processes, so they must always run
+    # as detached interactive actions even if the JSON says otherwise.
+    for definition in merged.values():
+        if isinstance(definition, dict):
+            command = definition.get("command")
+            if (
+                isinstance(command, list)
+                and any(
+                    isinstance(part, str) and "ota_deploy" in part
+                    for part in command
+                )
+            ):
+                definition["interactive"] = True
+                if (
+                    "--restart-companion" not in command
+                    and "--restart-companion-source" not in command
+                ):
+                    command.append("--restart-companion-source")
+    if merged == user_definitions and path.exists():
+        return
+    try:
+        save_action_definitions(path, merged)
+    except (OSError, ValueError):
+        return
+
+
+
+
 def _receiver_command(
     output_dir: Path, opencode_cwd: Path | None = None
 ) -> list[str]:
@@ -116,13 +213,19 @@ def _receiver_command(
 
 
 class ActionEditor:
-    def __init__(self, parent: Tk, config_path: Path) -> None:
+    def __init__(
+        self,
+        parent: Tk,
+        config_path: Path,
+        on_change: object = None,
+    ) -> None:
         self.window = Toplevel(parent)
         self.window.title("Configure voice actions")
         self.window.configure(background=_COLORS["background"])
         self.window.geometry("860x590")
         self.window.minsize(760, 500)
         self.config_path = config_path
+        self.on_change = on_change
         self.actions = load_action_definitions(config_path)
         self.current_name: str | None = None
 
@@ -135,7 +238,9 @@ class ActionEditor:
 
         self._build()
         self._refresh_list()
-
+        self.window.bind(
+            "<FocusIn>", lambda _event: self._refresh_list(self.current_name)
+        )
     def _build(self) -> None:
         outer = ttk.Frame(self.window, padding=22, style="App.TFrame")
         outer.pack(fill="both", expand=True)
@@ -242,6 +347,9 @@ class ActionEditor:
         )
 
     def _refresh_list(self, selected: str | None = None) -> None:
+        # Re-read the persisted configuration before drawing the list so an
+        # externally edited or stale JSON file is reflected in the UI.
+        self._reload_actions(fallback=self.actions)
         self.action_list.delete(0, "end")
         names = sorted(self.actions, key=str.casefold)
         for name in names:
@@ -250,6 +358,29 @@ class ActionEditor:
             index = names.index(selected)
             self.action_list.selection_set(index)
             self.action_list.see(index)
+
+    def _reload_actions(
+        self,
+        selected: str | None = None,
+        fallback: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        """Feed the latest persisted actions back into this editor.
+
+        Saving delegates to ``save_action_definitions`` first; reloading keeps
+        the UI synchronized with the JSON file rather than trusting the copy
+        held in memory, so edits made outside the editor are reflected too.
+        """
+        try:
+            self.actions = load_action_definitions(self.config_path)
+        except (OSError, ValueError):
+            if fallback is not None:
+                self.actions = fallback
+        callback = self.on_change
+        if callable(callback):
+            try:
+                callback(self.actions)
+            except TypeError:
+                callback()
 
     def _select_action(self, event: object = None) -> None:
         if (
@@ -309,7 +440,9 @@ class ActionEditor:
                 "Could not save actions", str(error), parent=self.window
             )
             return
-        self.actions = updated_actions
+        self._reload_actions(
+            selected=None, fallback=updated_actions
+        )
         self._new_action()
         self._refresh_list()
 
@@ -371,7 +504,7 @@ class ActionEditor:
                 "Could not save actions", str(error), parent=self.window
             )
             return
-        self.actions = updated_actions
+        self._reload_actions(fallback=updated_actions)
         self.current_name = name
         self._refresh_list(name)
         messagebox.showinfo(
@@ -389,6 +522,8 @@ class CompanionApp:
         self.root.minsize(700, 540)
         self.root.configure(background=_COLORS["background"])
         self.config_path = default_actions_path()
+        ensure_example_actions(self.config_path)
+        self.actions = load_action_definitions(self.config_path)
         self.output_dir = recordings_path()
         self._log_directory = tempfile.TemporaryDirectory(
             prefix="sticks3-companion-"
@@ -725,10 +860,21 @@ class CompanionApp:
         process.terminate()
 
     def open_actions(self) -> None:
+        ensure_example_actions(self.config_path)
         try:
-            ActionEditor(self.root, self.config_path)
+            ActionEditor(
+                self.root,
+                self.config_path,
+                on_change=self._refresh_actions,
+            )
         except ValueError as error:
             messagebox.showerror("Invalid actions configuration", str(error), parent=self.root)
+
+    def _refresh_actions(
+        self, definitions: object = None
+    ) -> None:
+        ensure_example_actions(self.config_path)
+        self.actions = load_action_definitions(self.config_path)
 
     def open_recordings(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)

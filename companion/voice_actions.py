@@ -412,9 +412,19 @@ class VoiceCommandRouter:
         self._handle_intent(intent)
 
     def handle(self, transcript: str) -> Optional[str]:
-        """Return dictation text, or route a prefixed command and return None."""
+        """Return dictation text, or route a prefixed command and return None.
+
+        Reload the configured actions from disk on every call so local edits
+        made through the companion UI (or by editing actions.json directly)
+        are honored by any routing entry point, not only ``route`` and
+        ``route_command``.
+        """
         if self._forward_to_active_prompt(transcript):
             return None
+        try:
+            self.actions = load_actions(self.actions_path)
+        except ValueError as error:
+            print(f"Could not reload voice actions: {error}", file=sys.stderr)
         intent = parse_intent(transcript)
         action_request = (
             intent.content if intent.target == "action"

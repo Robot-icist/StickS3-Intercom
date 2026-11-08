@@ -1,6 +1,7 @@
 #include "WifiOtaService.h"
 
 #include <ArduinoOTA.h>
+#include <M5Unified.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -12,6 +13,88 @@ namespace controller {
 namespace {
 
 constexpr uint32_t kWifiConnectTimeoutMs = 20000;
+
+static uint8_t s_otaPercent = 255;
+static int s_otaBarFill = 0;
+static char s_lastOtaStatus[32] = "";
+
+void beginOtaProgressScreen(const char *status) {
+  auto &d = M5.Display;
+  const int w = d.width();
+  const int h = d.height();
+  d.fillScreen(0x0000);
+  d.setTextDatum(lgfx::textdatum_t::top_center);
+  d.setFont(&fonts::Font2);
+  d.setTextColor(0xF81F, 0x0000);
+  d.drawString("OTA UPDATE", w / 2, h / 2 - 54);
+  d.setFont(&fonts::Font0);
+  d.setTextColor(0xFFFF, 0x0000);
+  d.drawString(status, w / 2, h / 2 - 30);
+  const int bx = 16;
+  const int by = h / 2 - 6;
+  const int bw = w - 32;
+  const int bh = 12;
+  d.drawRect(bx, by, bw, bh, 0xFFFF);
+  d.setTextColor(0xFFE0, 0x0000);
+  d.drawString("DO NOT POWER OFF", w / 2, by + 34);
+  char percentText[16];
+  snprintf(percentText, sizeof(percentText), "0%%");
+  d.setTextColor(0xFFFF, 0x0000);
+  d.drawString(percentText, w / 2, by + 16);
+  s_otaPercent = 0;
+  s_otaBarFill = 0;
+  M5.Display.waitDisplay();
+  strncpy(s_lastOtaStatus, status, sizeof(s_lastOtaStatus) - 1);
+  s_lastOtaStatus[sizeof(s_lastOtaStatus) - 1] = '\0';
+}
+
+void updateOtaStatusText(const char *status) {
+  if (strcmp(s_lastOtaStatus, status) == 0) {
+    return;
+  }
+  auto &d = M5.Display;
+  const int w = d.width();
+  const int h = d.height();
+  const int by = h / 2 - 6;
+  d.fillRect(w / 2 - 70, h / 2 - 32, 140, 12, 0x0000);
+  d.setTextDatum(lgfx::textdatum_t::top_center);
+  d.setFont(&fonts::Font0);
+  d.setTextColor(0xFFFF, 0x0000);
+  d.drawString(status, w / 2, h / 2 - 30);
+  d.waitDisplay();
+  strncpy(s_lastOtaStatus, status, sizeof(s_lastOtaStatus) - 1);
+  s_lastOtaStatus[sizeof(s_lastOtaStatus) - 1] = '\0';
+}
+
+void updateOtaProgressBar(uint8_t percent) {
+  if (percent == s_otaPercent) {
+    return;
+  }
+  auto &d = M5.Display;
+  const int w = d.width();
+  const int h = d.height();
+  const int bx = 16;
+  const int by = h / 2 - 6;
+  const int bw = w - 32;
+  const int bh = 12;
+  const int interiorWidth = bw - 2;
+  const int newFill = interiorWidth * static_cast<int>(percent) / 100;
+  if (newFill > s_otaBarFill) {
+    d.fillRect(bx + 1 + s_otaBarFill, by + 1, newFill - s_otaBarFill,
+               bh - 2, 0x07E0);
+  }
+  d.setTextDatum(lgfx::textdatum_t::top_center);
+  d.setFont(&fonts::Font0);
+  d.fillRect(w / 2 - 24, by + 16, 48, 12, 0x0000);
+  d.setTextColor(0xFFFF, 0x0000);
+  char percentText[16];
+  snprintf(percentText, sizeof(percentText), "%u%%",
+           static_cast<unsigned>(percent));
+  d.drawString(percentText, w / 2, by + 16);
+  s_otaPercent = percent;
+  s_otaBarFill = newFill;
+  M5.Display.waitDisplay();
+}
 
 }  // namespace
 
@@ -31,11 +114,47 @@ bool WifiOtaService::begin(const char* hostname) {
   ArduinoOTA.setHostname(_hostname);
   ArduinoOTA.setPassword(_otaPassword.c_str());
   ArduinoOTA.setMdnsEnabled(false);
-  ArduinoOTA.onStart([]() { Serial.println("[ota] Update started"); });
-  ArduinoOTA.onEnd(
-      []() { Serial.println("\n[ota] Update complete; restarting"); });
-  ArduinoOTA.onError(
-      [](ota_error_t error) { Serial.printf("[ota] Update failed (%u)\n", error); });
+  ArduinoOTA.onStart([this]() {
+    _otaInProgress = true;
+    _otaProgress = 0;
+    _otaCurrent = 0;
+    _otaTotal = 0;
+    strncpy(_otaStatus, "STARTING", sizeof(_otaStatus) - 1);
+    _otaStatus[sizeof(_otaStatus) - 1] = '\0';
+    beginOtaProgressScreen(_otaStatus);
+    Serial.println("[ota] Update started");
+  });
+  ArduinoOTA.onProgress([this](unsigned int current, unsigned int total) {
+    _otaCurrent = current;
+    _otaTotal = total;
+    if (total > 0) {
+      _otaProgress = static_cast<uint8_t>((static_cast<uint64_t>(current) * 100U) / total);
+    } else {
+      _otaProgress = 0;
+    }
+    strncpy(_otaStatus, "UPDATING", sizeof(_otaStatus) - 1);
+    _otaStatus[sizeof(_otaStatus) - 1] = '\0';
+    updateOtaStatusText(_otaStatus);
+    updateOtaProgressBar(_otaProgress);
+    Serial.printf("[ota] Progress: %u%%\r", _otaProgress);
+  });
+  ArduinoOTA.onEnd([this]() {
+    _otaProgress = 100;
+    _otaInProgress = false;
+    strncpy(_otaStatus, "COMPLETE", sizeof(_otaStatus) - 1);
+    _otaStatus[sizeof(_otaStatus) - 1] = '\0';
+    beginOtaProgressScreen(_otaStatus);
+    updateOtaProgressBar(100);
+    Serial.println("\n[ota] Update complete; restarting");
+  });
+  ArduinoOTA.onError([this](ota_error_t error) {
+    _otaInProgress = false;
+    strncpy(_otaStatus, "FAILED", sizeof(_otaStatus) - 1);
+    _otaStatus[sizeof(_otaStatus) - 1] = '\0';
+    beginOtaProgressScreen(_otaStatus);
+    updateOtaProgressBar(_otaProgress);
+    Serial.printf("[ota] Update failed (%u)\n", error);
+  });
 
   Preferences preferences;
   if (!preferences.begin("intercom", true)) {

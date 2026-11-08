@@ -46,6 +46,8 @@ namespace controller
 
     bool begin();
     void update(uint32_t now);
+    void enterDeepSleep();
+    void resetIdleTimer() { _lastValidInputAt = millis(); }
     void onConnectionChanged() { _haveMouseReport = false; }
     ControllerViewState viewState(bool connected) const;
     const char *errorMessage() const { return _errorMessage; }
@@ -159,6 +161,7 @@ namespace controller
     uint32_t _lastJoystickLogAt = 0;
     uint32_t _lastGestureAt = 0;
     uint32_t _lastValidInputAt = 0;
+    uint32_t _sleepTimeoutMs = 60000;
     uint32_t _lastGestureKeyAt = 0;
     uint32_t _lastMagnifierZoomAt = 0;
     uint32_t _lastMagnifierPanAt = 0;

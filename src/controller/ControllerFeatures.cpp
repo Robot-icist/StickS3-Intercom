@@ -2,6 +2,7 @@
 
 #include <M5Unified.h>
 #include <Preferences.h>
+#include <esp_sleep.h>
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,11 @@ namespace controller
     constexpr uint8_t kJoystickProbeAttempts = 12;
     constexpr uint32_t kJoystickProbeDelayMs = 100;
     constexpr uint32_t kInputIntervalMs = 20;
+#ifndef INTERCOM_IDLE_SLEEP_MS
+#define INTERCOM_IDLE_SLEEP_MS 60000
+#endif
+    constexpr uint32_t kDefaultIdleSleepMs = INTERCOM_IDLE_SLEEP_MS;
+    constexpr int32_t kIdleMovementThreshold = 200;
     constexpr uint32_t kBatteryIntervalMs = 5000;
     constexpr uint32_t kModeHoldMs = 900;
     constexpr uint32_t kClickMaxMs = 600;
@@ -269,6 +275,7 @@ namespace controller
     const uint8_t savedMotion = preferences.getUChar("motion", 3);
     const uint8_t savedMotionFlipX = preferences.getUChar("mflipX", 0);
     const uint8_t savedMotionFlipY = preferences.getUChar("mflipY", 0);
+    const uint32_t savedSleepMs = preferences.getUInt("sleepMs", kDefaultIdleSleepMs);
     preferences.end();
     if (savedRotation > 3 || savedMode >= kModeCount || savedFlipX > 1 ||
         savedFlipY > 1 || savedDpi > 6 || savedMotion > 6 ||
@@ -301,6 +308,7 @@ namespace controller
     _colorPalette = loadColorPalette();
     _selectedPaletteIndex = static_cast<uint8_t>(_colorPalette);
     _styleSaved = true;
+    _sleepTimeoutMs = savedSleepMs;
     _lastValidInputAt = millis();
     return true;
   }
@@ -320,6 +328,26 @@ namespace controller
     {
       updateImu(now);
       _lastImuAt = now;
+    }
+
+    if (_modePickerActive)
+    {
+      _lastValidInputAt = now;
+    }
+
+    if (_sleepTimeoutMs > 0 &&
+        _micAudio.status() != MicAudioStatus::Recording &&
+        _micAudio.status() != MicAudioStatus::Sending &&
+        _micAudio.status() != MicAudioStatus::Live)
+    {
+      if (now - _lastValidInputAt >= _sleepTimeoutMs)
+      {
+        enterDeepSleep();
+      }
+    }
+    else
+    {
+      _lastValidInputAt = now;
     }
   }
 
@@ -813,6 +841,12 @@ namespace controller
       _buttonBSuppressed = false;
     }
 
+    if (buttonA || buttonB || buttonA != _previousButtonA ||
+        buttonB != _previousButtonB)
+    {
+      _lastValidInputAt = now;
+    }
+
     _previousButtonA = buttonA;
     _previousButtonB = buttonB;
   }
@@ -848,7 +882,12 @@ namespace controller
 
     _joystickError = false;
     _joystickErrorCount = 0;
-    _lastValidInputAt = now;
+    if (std::abs(joystick.x) >= kIdleMovementThreshold ||
+        std::abs(joystick.y) >= kIdleMovementThreshold ||
+        joystick.buttonPressed)
+    {
+      _lastValidInputAt = now;
+    }
     if (now - _lastJoystickLogAt >= 1000)
     {
       _lastJoystickLogAt = now;
@@ -1155,6 +1194,12 @@ namespace controller
     if (!M5.Imu.getAccel(&ax, &ay, &az) || !M5.Imu.getGyro(&gx, &gy, &gz))
     {
       return;
+    }
+
+    if (std::fabs(gx) > 5.0f || std::fabs(gy) > 5.0f ||
+        std::fabs(gz) > 5.0f)
+    {
+      _lastValidInputAt = now;
     }
 
     const uint8_t rotation =
@@ -1496,6 +1541,33 @@ namespace controller
       _hid.sendMouseReport(0, 0, 0);
       Serial.println("[controller] joystick click -> left click");
     }
+  }
+
+  void ControllerFeatures::enterDeepSleep()
+  {
+    Serial.println("[controller] entering deep sleep after idle timeout");
+    _lastValidInputAt = millis();
+
+    // Give the HID state a moment to settle, then power down the display.
+    M5.Display.sleep();
+    M5.Display.waitDisplay();
+    M5.Speaker.end();
+
+    // Buttons are on GPIO 11 / 12 on the StickS3 and are active low.
+    constexpr uint64_t kButtonWakeMask =
+        (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_12);
+#if defined(ESP_IDF_VERSION_VAL) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+    esp_sleep_enable_ext1_wakeup_io(kButtonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+#else
+    esp_sleep_enable_ext1_wakeup(kButtonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+#endif
+
+    // Allow the joystick to be re-polled periodically after wake, but the device
+    // will reboot into the normal idle handling on any wake source.
+    /* NOTE: joystick movement itself cannot wake the ESP32 from deep sleep
+       because the Joystick2 unit is polled over I2C. The button wake sources
+       above cover the explicit "button pressed/clicked" requirement. */
+    esp_deep_sleep_start();
   }
 
 } // namespace controller

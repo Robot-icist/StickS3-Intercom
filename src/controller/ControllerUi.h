@@ -54,6 +54,9 @@ namespace controller
     uint8_t selectedPaletteIndex = 0;
     int8_t batteryLevel = -1;
     bool joystickError = false;
+    bool otaInProgress = false;
+    uint8_t otaProgress = 0;
+    char otaStatus[32] = {};
     char deviceName[32] = {};
     char ipAddress[16] = {};
     char mdnsName[40] = {};

@@ -182,6 +182,53 @@ void ControllerUi::render(const ControllerViewState &state, uint32_t now)
   {
     renderController(state, now, p);
   }
+
+  if (state.otaInProgress)
+  {
+    const int w = M5.Display.width();
+    const int h = M5.Display.height();
+    auto &d = M5.Display;
+    d.fillRoundRect(6, h / 2 - 62, w - 12, 124, 8, p.panel);
+    d.drawRoundRect(6, h / 2 - 62, w - 12, 124, 8, p.border);
+    d.setTextDatum(lgfx::textdatum_t::top_center);
+    d.setFont(&fonts::Font2);
+    d.setTextColor(p.accent, p.panel);
+    d.drawString("OTA UPDATE", w / 2, h / 2 - 54);
+    d.setFont(&fonts::Font0);
+    d.setTextColor(p.primary, p.panel);
+    const char *status = state.otaStatus[0] ? state.otaStatus : "IN PROGRESS";
+    d.drawString(status, w / 2, h / 2 - 30);
+    const int bx = 16;
+    const int by = h / 2 - 6;
+    const int bw = w - 32;
+    const int bh = 12;
+    d.drawRect(bx, by, bw, bh, p.border);
+    const int fill = bw * static_cast<int>(state.otaProgress) / 100;
+    if (fill > 0)
+    {
+      d.fillRect(bx + 1, by + 1, fill - 2, bh - 2, p.connected);
+    }
+    char percent[16];
+    snprintf(percent, sizeof(percent), "%u%%", static_cast<unsigned>(state.otaProgress));
+    d.drawString(percent, w / 2, by + 16);
+    d.setTextColor(p.warning, p.panel);
+    d.drawString("DO NOT POWER OFF", w / 2, by + 34);
+    const int cx = w / 2;
+    const int cy = h / 2 - 38;
+    const int radius = 14;
+    const int activeSegment = static_cast<int>(now / 120) % 8;
+    for (int i = 0; i < 8; ++i)
+    {
+      const float angle =
+          (static_cast<float>(i) * 45.0f + now / 8.0f) * 0.0174533f;
+      const int x = cx + static_cast<int>(radius * std::cos(angle));
+      const int y = cy + static_cast<int>(radius * std::sin(angle));
+      d.fillCircle(x, y, 2,
+                   (i == activeSegment) ? p.accent : p.secondary);
+    }
+  }
+
+  M5.Display.waitDisplay();
 }
 
 void ControllerUi::renderModePicker(const ControllerViewState &state,

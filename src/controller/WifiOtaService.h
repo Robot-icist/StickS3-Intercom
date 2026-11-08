@@ -15,6 +15,9 @@ class WifiOtaService {
   const char* hostname() const { return _hostname; }
   const char* otaPassword() const { return _otaPassword.c_str(); }
   String ipAddress() const;
+  bool otaInProgress() const { return _otaInProgress; }
+  uint8_t otaProgress() const { return _otaProgress; }
+  const char* otaStatus() const { return _otaStatus; }
 
  private:
   bool loadOrCreateOtaPassword();
@@ -34,6 +37,11 @@ class WifiOtaService {
   bool _portalStarted = false;
   bool _otaStarted = false;
   bool _mdnsStarted = false;
+  bool _otaInProgress = false;
+  uint8_t _otaProgress = 0;
+  uint32_t _otaCurrent = 0;
+  uint32_t _otaTotal = 0;
+  char _otaStatus[32] = "READY";
 };
 
 }  // namespace controller
