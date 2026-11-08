@@ -242,15 +242,48 @@ void ControllerUi::renderModePicker(const ControllerViewState &state,
       sizeof(modeNames) / sizeof(modeNames[0]);
   constexpr int16_t kFirstRowY = 34;
   constexpr int16_t kRowHeight = 21;
+  constexpr uint8_t kVisibleRows = 8;
+  constexpr uint8_t kMaxStartRow = kModeCount > kVisibleRows
+                                      ? kModeCount - kVisibleRows
+                                      : 0;
+
+  // Keep the selected mode inside a compact scrollable viewport so modes near
+  // the end (especially Sleep) do not run into the footer/help text.
+  uint8_t startRow = 0;
+  if (state.selectedMode >= 3)
+  {
+    startRow = state.selectedMode - 3;
+  }
+  if (startRow > kMaxStartRow)
+  {
+    startRow = kMaxStartRow;
+  }
+
   _screen.fillScreen(p.background);
   _screen.setTextDatum(lgfx::textdatum_t::top_center);
   _screen.setFont(&fonts::Font2);
   _screen.setTextColor(p.primary, p.background);
   _screen.drawString("SELECT MODE", _screen.width() / 2, 8);
   _screen.setFont(&fonts::Font0);
-  for (uint8_t index = 0; index < kModeCount; ++index)
+
+  if (startRow > 0)
   {
-    const int16_t y = kFirstRowY + index * kRowHeight;
+    _screen.drawString("^", _screen.width() - 16, kFirstRowY - 12);
+  }
+  if (startRow + kVisibleRows < kModeCount)
+  {
+    _screen.drawString("v", _screen.width() - 16,
+                      kFirstRowY + kVisibleRows * kRowHeight - 4);
+  }
+
+  for (uint8_t slot = 0; slot < kVisibleRows; ++slot)
+  {
+    const uint8_t index = startRow + slot;
+    if (index >= kModeCount)
+    {
+      break;
+    }
+    const int16_t y = kFirstRowY + slot * kRowHeight;
     const bool selected = index == state.selectedMode;
     if (selected)
     {
