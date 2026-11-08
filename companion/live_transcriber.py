@@ -38,8 +38,9 @@ Notes
 * A WAV file is only picked up once it is complete. The receiver uses Python's
   ``wave`` writer, which only patches the real RIFF sizes when it closes the
   file, so an in-progress recording is skipped until the next poll.
-* onnx-asr resamples the 8 kHz StickS3 audio to the 16 kHz the model wants
-  and only needs numpy + onnxruntime (no PyTorch, no FFmpeg).
+* Current firmware records 16 kHz wideband audio, which matches the model's
+  native rate; recordings from older 8 kHz firmware are resampled by onnx-asr.
+  Only numpy + onnxruntime are needed (no PyTorch, no FFmpeg).
 * The transcript is copied to the clipboard before Ctrl+V is sent, so the
   text also stays on the clipboard for a second paste.
 """

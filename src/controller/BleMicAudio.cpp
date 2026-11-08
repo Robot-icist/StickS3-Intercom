@@ -24,10 +24,15 @@ namespace controller
     constexpr char kMicStreamUuid[] = "e5d10002-3c9b-4f6a-9b2d-2a7f4510a001";
     constexpr char kMicCompanionUuid[] = "e5d10003-3c9b-4f6a-9b2d-2a7f4510a001";
     constexpr uint32_t kCompanionHeartbeatTimeoutMs = 4000;
-    constexpr uint8_t kProtocolVersion = 1;
+    // Version 2 adds the wideband flag. The packet layout is unchanged; a
+    // 20 ms wideband frame is a 170-byte notification, which fits the 185-byte
+    // local MTU requested in BleHidDevice (182-byte notification payload).
+    // Version 1 streams remain 8 kHz for the receiver's compatibility path.
+    constexpr uint8_t kProtocolVersion = 2;
     constexpr uint8_t kFlagLive = 0x01;
     constexpr uint8_t kFlagClip = 0x02;
     constexpr uint8_t kFlagVoiceCommand = 0x04;
+    constexpr uint8_t kFlagWideband = 0x08;
     constexpr uint8_t kFlagEnd = 0x80;
     constexpr size_t kPacketHeaderBytes = 6;
 
@@ -256,6 +261,14 @@ namespace controller
       Serial.println("[mic] onboard microphone is unavailable");
       _status = MicAudioStatus::Unavailable;
     }
+
+    // The StickS3 shares the ES8311 codec between the microphone and the
+    // AW8737 speaker amplifier, and M5Stack's documentation requires the
+    // amplifier to be off while capturing (the IR receiver has the same
+    // requirement). This controller never plays audio, so keep the PA off for
+    // the whole lifetime of the device. M5.Speaker.end() clears the M5PM1
+    // speaker-enable bit even when the speaker was never started.
+    M5.Speaker.end();
     return true;
   }
 
@@ -291,6 +304,10 @@ namespace controller
       Serial.println("[mic] connect a BLE audio companion before recording");
       return false;
     }
+    // M5Stack documents that the speaker amplifier must be disabled before the
+    // microphone is started on the StickS3. The controller does not play audio,
+    // so this also removes the idle amplifier noise/whistle while recording.
+    M5.Speaker.end();
     if (!M5.Mic.isEnabled() || !M5.Mic.begin())
     {
       Serial.println("[mic] microphone startup failed");
@@ -300,6 +317,7 @@ namespace controller
     _micRunning = true;
     _recordPending = false;
     _sequence = 0;
+    _stepIndex = 0;
     return true;
   }
 
@@ -373,13 +391,17 @@ namespace controller
     Serial.println("[mic] audio operation cancelled");
   }
 
-  void BleMicAudio::encodeFrame(uint8_t *output) const
+  void BleMicAudio::encodeFrame(uint8_t *output)
   {
     int32_t predictor = _samples[0];
-    int32_t stepIndex = 0;
+    // Carry the step index between frames so the quantizer does not restart at
+    // its smallest step every 20 ms. The block header still makes each frame
+    // independently decodable (a lost BLE packet cannot desynchronise the next
+    // frame).
+    int32_t stepIndex = _stepIndex;
     output[0] = static_cast<uint8_t>(predictor & 0xff);
     output[1] = static_cast<uint8_t>((predictor >> 8) & 0xff);
-    output[2] = 0;
+    output[2] = static_cast<uint8_t>(stepIndex);
     output[3] = 0;
     std::memset(output + 4, 0, kEncodedFrameBytes - 4);
 
@@ -430,6 +452,7 @@ namespace controller
         packed |= static_cast<uint8_t>(code << 4);
       }
     }
+    _stepIndex = static_cast<uint8_t>(stepIndex);
   }
 
   bool BleMicAudio::sendFrame(const uint8_t *frame, uint16_t sequence,
@@ -441,7 +464,7 @@ namespace controller
     }
     uint8_t packet[kPacketHeaderBytes + kEncodedFrameBytes] = {};
     packet[0] = kProtocolVersion;
-    packet[1] = flags;
+    packet[1] = static_cast<uint8_t>(flags | kFlagWideband);
     packet[2] = static_cast<uint8_t>(sequence & 0xff);
     packet[3] = static_cast<uint8_t>(sequence >> 8);
     packet[4] = static_cast<uint8_t>(kEncodedFrameBytes & 0xff);
@@ -460,7 +483,7 @@ namespace controller
     }
     const uint8_t packet[kPacketHeaderBytes] = {
         kProtocolVersion,
-        static_cast<uint8_t>(flags | kFlagEnd),
+        static_cast<uint8_t>(flags | kFlagWideband | kFlagEnd),
         static_cast<uint8_t>(sequence & 0xff),
         static_cast<uint8_t>(sequence >> 8),
         0,

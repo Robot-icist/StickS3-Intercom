@@ -177,6 +177,18 @@ class ServerDiagnostics final : public BLEServerCallbacks {
   }
 };
 
+class BatteryLevelCallbacks final : public BLECharacteristicCallbacks {
+ public:
+  void onSubscribe(BLECharacteristic* characteristic, ble_gap_conn_desc*,
+                   uint16_t subValue) override {
+    // Send the current level as soon as the host enables notifications; some
+    // hosts subscribe without first reading the characteristic.
+    if (subValue != 0) {
+      characteristic->notify();
+    }
+  }
+};
+
 class OtaCredentialsCallbacks final : public BLECharacteristicCallbacks {
  public:
   explicit OtaCredentialsCallbacks(
@@ -199,6 +211,7 @@ class OtaCredentialsCallbacks final : public BLECharacteristicCallbacks {
 };
 
 ServerDiagnostics kServerDiagnostics;
+BatteryLevelCallbacks kBatteryLevelCallbacks;
 
 }  // namespace
 
@@ -234,6 +247,11 @@ bool BleHidDevice::begin(BleMicAudio& micAudio,
   }
   _keyboardInputReport->setCallbacks(&kKeyboardDiagnostics);
   _mouseInputReport->setCallbacks(&kMouseDiagnostics);
+  BLECharacteristic* batteryLevel = _hid->batteryService()->getCharacteristic(
+      BLEUUID(static_cast<uint16_t>(0x2A19)));
+  if (batteryLevel != nullptr) {
+    batteryLevel->setCallbacks(&kBatteryLevelCallbacks);
+  }
 #if defined(CONFIG_BLUEDROID_ENABLED)
   BLEDescriptor* keyboardCccd = _keyboardInputReport->getDescriptorByUUID(
       BLEUUID(static_cast<uint16_t>(0x2902)));
@@ -271,7 +289,10 @@ bool BleHidDevice::begin(BleMicAudio& micAudio,
   memcpy(combinedReportMap + sizeof(kKeyboardReportMap), kMouseReportMap,
          sizeof(kMouseReportMap));
   _hid->reportMap(combinedReportMap, sizeof(combinedReportMap));
-  _hid->setBatteryLevel(100);
+  // ControllerFeatures reads the battery before this method runs, so apply the
+  // cached level now (before the service starts) and fall back to 100% only if
+  // the PMIC could not be read.
+  _hid->setBatteryLevel(_batteryLevelValid ? _batteryLevel : 100);
 
   if (!micAudio.begin(_server)) {
     Serial.println("[controller] BLE microphone service initialization failed");
@@ -338,6 +359,11 @@ bool BleHidDevice::updateConnection(uint32_t now) {
   _connected = connected;
   if (_connected) {
     Serial.println("[controller] BLE host connected");
+    // Re-publish the cached level so the host can read the current value
+    // immediately after service discovery.
+    if (_batteryLevelValid) {
+      _hid->setBatteryLevel(_batteryLevel);
+    }
   } else {
     kKeyboardDiagnostics.resetSubscription();
     kMouseDiagnostics.resetSubscription();
@@ -351,6 +377,20 @@ bool BleHidDevice::reportsReady() const {
   return _connected &&
          notificationsEnabled(_keyboardInputReport, kKeyboardDiagnostics) &&
          notificationsEnabled(_mouseInputReport, kMouseDiagnostics);
+}
+
+void BleHidDevice::setBatteryLevel(uint8_t level) {
+  if (level > 100) {
+    level = 100;
+  }
+  if (_batteryLevelValid && level == _batteryLevel) {
+    return;
+  }
+  _batteryLevel = level;
+  _batteryLevelValid = true;
+  if (_hid != nullptr) {
+    _hid->setBatteryLevel(level);
+  }
 }
 
 void BleHidDevice::sendKey(uint8_t key) {

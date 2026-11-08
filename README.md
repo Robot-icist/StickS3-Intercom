@@ -23,16 +23,28 @@ ESP-NOW intercom firmware for the **M5Stack StickS3**. Pair it with the
 | Mic I2S | MCLK 18, BCK 17, WS 15, DIN 16, `I2S_NUM_1` |
 | Buttons | BtnA (G11), BtnB (G12) |
 
-M5Unified config used by the firmware:
+M5Unified config used by the controller firmware:
 
 ```cpp
 cfg.internal_mic = true;
 cfg.internal_spk = true;
+M5.begin(cfg);
+M5.Speaker.end();  // disable the AW8737 PA; the controller never plays audio
 ```
 
-The StickS3 uses separate I2S ports for mic and speaker, so the hardware can run
-full duplex. The application still uses half-duplex push-to-talk to avoid
-feedback, but the audio layer does not need to switch ports.
+The StickS3 has separate I2S ports for the microphone and speaker, but both are
+wired to the same **ES8311** codec. M5Stack's StickS3 microphone example
+explicitly turns the speaker off before starting the mic because the codec
+cannot run capture and playback at the same time. The M5PM1 also exposes the
+speaker amplifier power as a GPIO (`M5.Speaker.begin()` enables the AW8737 PA,
+`M5.Speaker.end()` disables it). M5Stack documents the same requirement for the
+IR receiver, which also needs the amplifier off.
+
+M5Stack's StickS3 product page notes that **early batches may produce slight
+abnormal noise after startup**. The controller does not play audio at all, so it
+keeps the PA disabled from boot and again before every capture; this removes
+the idle hiss/whistle that the shared codec and amplifier can otherwise inject
+into the recording.
 
 ## Build and flash
 
@@ -289,12 +301,15 @@ you came from. The joystick is reserved for live audio in this mode, so open
 the mode picker from another mode. If the companion disconnects during audio,
 capture and transmission stop and the controller returns to its ready state.
 Clips are limited to 8 seconds. Live and clip capture are mutually exclusive.
-Audio is mono, 8 kHz IMA ADPCM; the StickS3 sends a framed notification every
-20 ms. The BLE link must
-negotiate an ATT MTU of at least 93 bytes for each frame to fit in one
-notification. Audio is delivered only to a companion that has connected and
-subscribed; Windows will not list this custom service as a microphone, so the
-Python companion below does the recording, transcription, and text injection.
+Audio is mono, 16 kHz IMA ADPCM; the StickS3 sends a framed notification every
+20 ms. The frame grows from 84 to 164 encoded bytes (a 170-byte packet), so the
+BLE link must negotiate an ATT MTU of at least 173 bytes; the firmware already
+requests 185, giving a 182-byte notification payload. Doubling the sample rate
+doubles the audio bandwidth (wideband speech) while keeping the same 20 ms
+cadence, packet rate, HID reports, OTA service, and heartbeat. Audio is delivered
+only to a companion that has connected and subscribed; Windows will not list this
+custom service as a microphone, so the Python companion below does the
+recording, transcription, and text injection.
 The companion refreshes a BLE heartbeat every second; without one for four
 seconds the StickS3 stops showing `AUDIO READY`, even if Windows retains a
 stale GATT subscription.
@@ -461,9 +476,10 @@ finished WAV with NVIDIA **Parakeet TDT 0.6B v3** (int8, ~640 MB) through
 the text into whichever input field has the caret. Parakeet is used because it
 is the fastest accurate open model on the HF Open ASR leaderboard for short
 clips (about 6.3 % average WER, 25 European languages) and runs on the CPU at
-several times real time without PyTorch, Transformers, or FFmpeg. The StickS3
-stream is 8 kHz, so `onnx-asr` resamples it to the 16 kHz the model expects;
-accuracy is therefore limited by the narrowband microphone, not by the model.
+several times real time without PyTorch, Transformers, or FFmpeg. Current
+firmware streams 16 kHz wideband audio, matching the model's native rate, so
+`onnx-asr` no longer needs to upsample. Recordings made with older 8 kHz
+firmware still work and are resampled automatically.
 
 All capture modes of the receiver are handled, because each produces a complete
 WAV in the same folder:
@@ -680,13 +696,16 @@ Linux uses `wl-copy`/`xclip` plus `ydotool`/`xdotool`.
 The custom audio service UUID is
 `e5d10001-3c9b-4f6a-9b2d-2a7f4510a001`; its notify characteristic is
 `e5d10002-3c9b-4f6a-9b2d-2a7f4510a001`. Each notification starts with a
-6-byte little-endian header: protocol version (1), flags (live `0x01`, clip
-`0x02`, voice command `0x04`, end `0x80`), 16-bit sequence number, and 16-bit
-payload length. Audio
-frames contain an 84-byte IMA ADPCM block: signed 16-bit initial predictor,
-step index, reserved byte, then low-nibble-first ADPCM samples. End packets
-have a zero payload length. The receiver and firmware implement this initial
-protocol together; it is not a standardized BLE audio format.
+6-byte little-endian header: protocol version (2), flags (live `0x01`, clip
+`0x02`, voice command `0x04`, wideband `0x08`, end `0x80`), 16-bit sequence
+number, and 16-bit payload length. Audio
+frames contain an IMA ADPCM block: signed 16-bit initial predictor, step index,
+reserved byte, then low-nibble-first ADPCM samples. Version 2 carries 320
+samples (20 ms at 16 kHz) in 164 bytes; version 1 carried 160 samples (20 ms at
+8 kHz) in 84 bytes. End packets have a zero payload length. The receiver accepts
+both versions and uses the wideband flag to write a 16 kHz WAV; the firmware and
+companion implement this protocol together, and it is not a standardized BLE
+audio format.
 
 ### HID and microphone regression guard
 
@@ -726,6 +745,12 @@ them when changing BLE setup, input handling, or companion behavior:
   before processing click/release and hold transitions. If the GATT companion
   disconnects during live capture, recording, or clip transmission, stop the
   operation and return the mic to idle so the user can still switch modes.
+- Keep the AW8737 speaker amplifier disabled whenever the microphone is
+  capturing. The StickS3 shares its ES8311 codec between capture and playback,
+  and M5Stack requires `M5.Speaker.end()` before `M5.Mic.begin()`. The
+  controller never plays audio, so it disables the PA at boot and before every
+  capture; this also suppresses the idle whistle/hiss noted for early StickS3
+  batches. Do not start the speaker just to "initialize" the codec.
 - Voice Action mode is command-only: a joystick click or BtnA toggles a
   recording, BtnB cancels, and the frames carry the voice-command flag `0x04`
   instead of the clip flag. The receiver must keep writing these as
@@ -793,12 +818,14 @@ The controller is isolated in `src/controller` so it can later be moved into a
 shared-library module. Its coordinator, input/gesture features, BLE HID
 transport, and display UI are separated into `BleHidController`,
 `ControllerFeatures`, `BleHidDevice`, and `ControllerUi`, respectively.
-The controller initializes the onboard microphone and speaker hardware. The
-custom BLE microphone sender and WAV receiver are an initial prototype;
-speaker reception/playback is not implemented, while transcription and
-focused-text injection are provided by `companion/live_transcriber.py`. The ESP32-S3 does not provide Bluetooth Classic A2DP/HFP,
-so any PC audio endpoint still requires companion software. The next steps
-are to test BLE notification throughput and audio quality on hardware, then
-add speaker reception as a separate mode if desired. Wi-Fi audio can be
-evaluated later while keeping BLE HID active, followed by coexistence tests
-with the fixed-channel ESP-NOW intercom.
+The controller initializes the onboard microphone and keeps the speaker
+amplifier disabled because it never plays audio; this avoids the shared-codec
+idle noise documented for the StickS3. The custom BLE microphone sender and WAV
+receiver stream 16 kHz wideband IMA ADPCM in 20 ms frames. Speaker
+reception/playback is not implemented, while transcription and focused-text
+injection are provided by `companion/live_transcriber.py`. The ESP32-S3 does not
+provide Bluetooth Classic A2DP/HFP, so any PC audio endpoint still requires
+companion software. The next steps are to confirm BLE notification throughput
+and audio quality on hardware, then add speaker reception as a separate mode if
+desired. Wi-Fi audio can be evaluated later while keeping BLE HID active,
+followed by coexistence tests with the fixed-channel ESP-NOW intercom.

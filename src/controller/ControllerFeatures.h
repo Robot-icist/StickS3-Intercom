@@ -71,6 +71,7 @@ namespace controller
     void toggleJoystickFlip(bool flipX);
     void toggleMotionFlip(bool flipX);
     void adjustMotionLevel(int32_t direction, uint32_t now);
+    void readBatteryLevel();
     void updateBattery(uint32_t now);
     void updateButtons(uint32_t now);
     void updateJoystick(uint32_t now);

@@ -20,12 +20,25 @@ MIC_SERVICE_UUID = "e5d10001-3c9b-4f6a-9b2d-2a7f4510a001"
 MIC_STREAM_UUID = "e5d10002-3c9b-4f6a-9b2d-2a7f4510a001"
 MIC_COMPANION_UUID = "e5d10003-3c9b-4f6a-9b2d-2a7f4510a001"
 COMPANION_HEARTBEAT_SECONDS = 1.0
-SAMPLE_RATE = 8000
-SAMPLES_PER_FRAME = 160
+# Protocol v2 marks 16 kHz wideband frames with FLAG_WIDEBAND. Protocol v1
+# firmware sent 8 kHz frames without that flag, so both old and new firmware
+# are supported by this receiver.
+SAMPLE_RATE_NARROWBAND = 8000
+SAMPLE_RATE_WIDEBAND = 16000
+# Encoded ADPCM frame size -> number of 16-bit PCM samples it expands to.
+# Version 1 uses 84 bytes / 160 samples (8 kHz, 20 ms); version 2 uses
+# 164 bytes / 320 samples (16 kHz, 20 ms).
+NARROWBAND_FRAME_BYTES = 84
+WIDEBAND_FRAME_BYTES = 164
+FRAME_SAMPLES = {NARROWBAND_FRAME_BYTES: 160, WIDEBAND_FRAME_BYTES: 320}
 HEADER_SIZE = 6
+# A notification carries the header plus one ADPCM frame. The ATT MTU must be
+# at least three bytes larger than the notification payload.
+WIDEBAND_MIN_MTU = HEADER_SIZE + WIDEBAND_FRAME_BYTES + 3
 FLAG_LIVE = 0x01
 FLAG_CLIP = 0x02
 FLAG_VOICE_COMMAND = 0x04
+FLAG_WIDEBAND = 0x08
 FLAG_END = 0x80
 RECORDING_NAME = re.compile(r"stickS3_\d+_(?:live|clip|command)\.wav\Z")
 
@@ -42,14 +55,18 @@ INDEX_TABLE = (-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8)
 
 
 def decode_frame(encoded: bytes) -> bytes:
-    if len(encoded) != 84:
-        raise ValueError(f"expected 84 ADPCM bytes, got {len(encoded)}")
+    samples_per_frame = FRAME_SAMPLES.get(len(encoded))
+    if samples_per_frame is None:
+        raise ValueError(
+            f"unexpected ADPCM frame size {len(encoded)}; "
+            f"expected one of {sorted(FRAME_SAMPLES)}"
+        )
 
     predictor = struct.unpack_from("<h", encoded)[0]
     step_index = min(encoded[2], 88)
     samples = [predictor]
 
-    for nibble_index in range((SAMPLES_PER_FRAME - 1)):
+    for nibble_index in range(samples_per_frame - 1):
         packed = encoded[4 + nibble_index // 2]
         code = (packed >> 4) & 0x0F if nibble_index & 1 else packed & 0x0F
         step = STEP_TABLE[step_index]
@@ -65,7 +82,7 @@ def decode_frame(encoded: bytes) -> bytes:
         step_index = max(0, min(88, step_index + INDEX_TABLE[code]))
         samples.append(predictor)
 
-    return struct.pack("<160h", *samples)
+    return struct.pack(f"<{samples_per_frame}h", *samples)
 
 
 class Receiver:
@@ -76,6 +93,7 @@ class Receiver:
         self.audio_file: wave.Wave_write | None = None
         self.last_sequence: int | None = None
         self.mode: str | None = None
+        self.sample_rate: int | None = None
 
     def _close_segment(self) -> None:
         if self.audio_file is not None:
@@ -84,17 +102,19 @@ class Receiver:
             print("Audio segment saved.")
         self.last_sequence = None
         self.mode = None
+        self.sample_rate = None
 
-    def _start_segment(self, mode: str) -> None:
+    def _start_segment(self, mode: str, sample_rate: int) -> None:
         self._close_segment()
         self.segment += 1
         path = self.output_dir / f"stickS3_{self.segment:04d}_{mode}.wav"
         self.audio_file = wave.open(str(path), "wb")
         self.audio_file.setnchannels(1)
         self.audio_file.setsampwidth(2)
-        self.audio_file.setframerate(SAMPLE_RATE)
+        self.audio_file.setframerate(sample_rate)
         self.mode = mode
-        print(f"Receiving {mode} audio -> {path}")
+        self.sample_rate = sample_rate
+        print(f"Receiving {mode} audio at {sample_rate} Hz -> {path}")
 
     def _flush(self) -> None:
         """Push buffered frames out so the transcriber can follow live audio.
@@ -115,7 +135,7 @@ class Receiver:
             return
 
         version, flags, sequence, frame_size = struct.unpack_from("<BBHH", data)
-        if version != 1:
+        if version not in (1, 2):
             print(f"Ignoring unsupported audio protocol version {version}.")
             return
 
@@ -135,8 +155,25 @@ class Receiver:
             print("Ignoring malformed audio frame.")
             return
 
-        if self.audio_file is None or self.mode != mode:
-            self._start_segment(mode)
+        sample_rate = (
+            SAMPLE_RATE_WIDEBAND
+            if version >= 2 and flags & FLAG_WIDEBAND
+            else SAMPLE_RATE_NARROWBAND
+        )
+        expected_frame_bytes = (
+            WIDEBAND_FRAME_BYTES
+            if sample_rate == SAMPLE_RATE_WIDEBAND
+            else NARROWBAND_FRAME_BYTES
+        )
+        if frame_size != expected_frame_bytes:
+            print("Ignoring frame size that does not match the sample rate.")
+            return
+        if (
+            self.audio_file is None
+            or self.mode != mode
+            or self.sample_rate != sample_rate
+        ):
+            self._start_segment(mode, sample_rate)
         if self.last_sequence is not None:
             expected = (self.last_sequence + 1) & 0xFFFF
             if sequence != expected:
@@ -440,6 +477,18 @@ async def receive(client: BleakClient, output_dir: Path,
         await client.write_gatt_char(
             MIC_COMPANION_UUID, b"\x01", response=False
         )
+        try:
+            mtu = client.mtu_size
+        except Exception:  # noqa: BLE001 - MTU is diagnostic only
+            mtu = None
+        if isinstance(mtu, int) and mtu > 0:
+            print(f"Negotiated ATT MTU: {mtu} bytes.")
+            if mtu < WIDEBAND_MIN_MTU:
+                print(
+                    f"Warning: wideband audio needs an ATT MTU of at least "
+                    f"{WIDEBAND_MIN_MTU} bytes; the operating system negotiated "
+                    f"{mtu}. Audio may be truncated."
+                )
         print(
             "Companion connected and microphone ready. Use joystick click "
             "for live audio, BtnA for a clip, or Ctrl+C to quit."

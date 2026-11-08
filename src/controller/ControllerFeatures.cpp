@@ -226,6 +226,9 @@ namespace controller
 
   bool ControllerFeatures::begin()
   {
+    _lastBatteryAt = millis();
+    readBatteryLevel();
+
     if (!M5.Imu.isEnabled())
     {
       Serial.println("[controller] StickS3 IMU is unavailable");
@@ -327,12 +330,30 @@ namespace controller
       return;
     }
     _lastBatteryAt = now;
+    readBatteryLevel();
+  }
 
+  void ControllerFeatures::readBatteryLevel()
+  {
     // M5Unified knows the StickS3's M5PM1 PMIC and reports 0..100, or a negative
     // value when the battery is not readable (for example on USB with no cell).
     const int32_t level = M5.Power.getBatteryLevel();
-    _batteryLevel =
-        (level >= 0 && level <= 100) ? static_cast<int8_t>(level) : -1;
+    if (level < 0 || level > 100)
+    {
+      _batteryLevel = -1;
+      return;
+    }
+
+    const auto batteryLevel = static_cast<int8_t>(level);
+    if (batteryLevel != _batteryLevel)
+    {
+      Serial.printf("[controller] battery %d%%\n",
+                    static_cast<int>(batteryLevel));
+    }
+    _batteryLevel = batteryLevel;
+    // Publish through the HID Battery Service so Windows displays the real
+    // pack level instead of a fixed value.
+    _hid.setBatteryLevel(static_cast<uint8_t>(batteryLevel));
   }
 
   ControllerViewState ControllerFeatures::viewState(bool connected) const

@@ -22,6 +22,11 @@ class BleHidDevice {
   bool reportsReady() const;
   const char* errorMessage() const { return _errorMessage; }
 
+  // Publishes the battery level through the HID Battery Service (0x180F).
+  // Values above 100 are clamped; repeated levels are not re-notified. Before
+  // begin() creates the HID device the level is cached and applied there.
+  void setBatteryLevel(uint8_t level);
+
   void sendKey(uint8_t key);
   void sendHotkey(uint8_t key);
   void sendHotkey(uint8_t modifier, uint8_t key);
@@ -36,6 +41,8 @@ class BleHidDevice {
   BLECharacteristic* _mouseInputReport = nullptr;
   OtaCredentialsProvider _otaCredentials;
   const char* _errorMessage = "BLE INIT FAILED";
+  uint8_t _batteryLevel = 0;
+  bool _batteryLevelValid = false;
   bool _connected = false;
   uint32_t _lastConnectionCheckAt = 0;
 };

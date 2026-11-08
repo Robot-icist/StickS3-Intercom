@@ -2,13 +2,19 @@ import asyncio
 import struct
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
 from ble_mic_receiver import (
+    FLAG_LIVE,
     FLAG_VOICE_COMMAND,
+    FLAG_WIDEBAND,
+    FRAME_SAMPLES,
     MIC_COMPANION_UUID,
     MIC_STREAM_UUID,
+    SAMPLE_RATE_NARROWBAND,
+    SAMPLE_RATE_WIDEBAND,
     Receiver,
     clear_existing_recordings,
     receive,
@@ -62,6 +68,55 @@ class VoiceCommandFrameTests(unittest.TestCase):
             self.assertTrue(
                 (output / "stickS3_0001_command.wav").is_file()
             )
+
+
+class AudioProtocolTests(unittest.TestCase):
+    def _record(self, version: int, flags: int, frame_bytes: int) -> tuple[int, int]:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            receiver = Receiver(output)
+            packet = struct.pack("<BBHH", version, flags, 0, frame_bytes)
+            receiver.on_notification(
+                None, bytearray(packet + bytes(frame_bytes))
+            )
+            receiver.on_notification(
+                None,
+                bytearray(struct.pack("<BBHH", version, flags | 0x80, 1, 0)),
+            )
+
+            recording = next(output.glob("stickS3_*.wav"))
+            with wave.open(str(recording), "rb") as audio_file:
+                return audio_file.getframerate(), audio_file.getnframes()
+
+    def test_legacy_v1_packet_stays_narrowband(self) -> None:
+        sample_rate, frames = self._record(1, FLAG_LIVE, 84)
+        self.assertEqual(sample_rate, SAMPLE_RATE_NARROWBAND)
+        self.assertEqual(frames, FRAME_SAMPLES[84])
+
+    def test_v2_wideband_packet_is_16k(self) -> None:
+        sample_rate, frames = self._record(
+            2, FLAG_LIVE | FLAG_WIDEBAND, 164
+        )
+        self.assertEqual(sample_rate, SAMPLE_RATE_WIDEBAND)
+        self.assertEqual(frames, FRAME_SAMPLES[164])
+
+    def test_v2_packet_without_wideband_flag_stays_narrowband(self) -> None:
+        sample_rate, _ = self._record(2, FLAG_LIVE, 84)
+        self.assertEqual(sample_rate, SAMPLE_RATE_NARROWBAND)
+
+    def test_frame_size_must_match_sample_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            receiver = Receiver(output)
+            packet = struct.pack(
+                "<BBHH", 2, FLAG_LIVE | FLAG_WIDEBAND, 0, 84
+            )
+            receiver.on_notification(
+                None, bytearray(packet + bytes(84))
+            )
+            receiver._close_segment()
+
+            self.assertFalse(any(output.glob("stickS3_*.wav")))
 
 
 class CompanionHeartbeatTests(unittest.IsolatedAsyncioTestCase):
