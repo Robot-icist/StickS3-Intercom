@@ -44,6 +44,11 @@ namespace controller
     bool motionFlipSaved = true;
     bool styleMode = false;
     bool styleSaved = true;
+    bool brightnessMode = false;
+    bool brightnessSaved = true;
+    uint8_t brightness = 180;
+    bool sleepMode = false;
+    uint32_t sleepTimeoutMs = 60000;
     bool flipX = false;
     bool flipY = false;
     bool motionFlipX = false;
@@ -68,6 +73,13 @@ namespace controller
     uint32_t lastValidInputAt = 0;
   };
 
+  void drawBatteryStatus(LGFX_Sprite &screen, int8_t level, int32_t y, const Palette &p);
+  void drawClippedMarquee(LGFX_Sprite &screen, const char *text, int32_t x, int32_t y,
+                          int32_t width, int32_t height, uint16_t foreground,
+                          uint16_t background, uint32_t now);
+  void drawNetworkIdentity(LGFX_Sprite &screen, const ControllerViewState &state,
+                           uint32_t now, const Palette &p);
+
   class ControllerUi
   {
   public:
@@ -77,6 +89,14 @@ namespace controller
 
   private:
     void renderController(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderMicMode(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderMagnifierMode(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderAirMouseMode(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderDpiMode(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderStyleMode(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderBrightnessMode(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderSleepMode(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderMouseMode(const ControllerViewState &state, uint32_t now, const Palette &p);
     void renderModePicker(const ControllerViewState &state, uint32_t now, const Palette &p);
     void renderImuCube(const ControllerViewState &state, const Palette &p);
 

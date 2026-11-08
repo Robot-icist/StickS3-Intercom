@@ -24,8 +24,10 @@ namespace controller
       AirMouse = 5,
       Magnifier = 6,
       Style = 7,
+      Brightness = 8,
+      Sleep = 9,
     };
-    static constexpr uint8_t kModeCount = 9;
+    static constexpr uint8_t kModeCount = 11;
 
     // Color palettes for the UI
     enum class ColorPalette : uint8_t
@@ -68,6 +70,8 @@ namespace controller
     bool saveMode(Mode mode);
     bool saveColorPalette(ColorPalette palette);
     ColorPalette loadColorPalette();
+    bool saveBrightness();
+    bool saveSleepTimeout();
     void applyMode(Mode mode);
     void toggleMicrophoneMode();
     void toggleJoystickFlip(bool flipX);
@@ -85,6 +89,11 @@ namespace controller
     void handleAirMouseJoystick(int32_t x, int32_t y, uint32_t now);
     void handleMagnifierMotion(float gyroX, float gyroZ, float dt, uint32_t now);
     void handleMagnifierJoystick(int32_t x, int32_t y, uint32_t now);
+    void handleOrientationMode(JoystickState &joystick, uint32_t now);
+    void handleDpiMode(int32_t x, int32_t y, uint32_t now, JoystickState &joystick);
+    void handleStyleMode(uint32_t now, JoystickState &joystick);
+    void handleBrightnessMode(int32_t x, uint32_t now, JoystickState &joystick);
+    void handleSleepMode(int32_t x, uint32_t now, JoystickState &joystick);
     void toggleMagnifier();
     void zoomMagnifier(bool zoomIn);
     void panMagnifier(uint8_t key);
@@ -120,6 +129,13 @@ namespace controller
     bool _joystickHoldHandled = false;
     bool _gestureArmed = true;
     bool _styleSaved = true;
+    bool _brightnessSaved = true;
+    uint8_t _brightness = 180;
+    uint32_t _lastBrightnessAdjustAt = 0;
+    bool _brightnessStickCentered = true;
+    uint32_t _lastSleepAdjustAt = 0;
+    bool _sleepStickCentered = true;
+    uint32_t _selectedSleepIndex = 1;
     ColorPalette _colorPalette = ColorPalette::Default;
     uint8_t _selectedPaletteIndex = 0;
     uint32_t _lastStyleInputAt = 0;

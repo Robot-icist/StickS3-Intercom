@@ -236,7 +236,8 @@ void ControllerUi::renderModePicker(const ControllerViewState &state,
 {
   static const char *const modeNames[] = {
       "MOUSE", "AIR MOUSE", "NAVIGATION", "MAGNIFIER",
-      "MICROPHONE", "SPEED", "ORIENTATION", "STYLE"};
+      "MICROPHONE", "SPEED", "ORIENTATION", "STYLE",
+      "BRIGHTNESS", "SLEEP"};
   constexpr uint8_t kModeCount =
       sizeof(modeNames) / sizeof(modeNames[0]);
   constexpr int16_t kFirstRowY = 34;
@@ -257,7 +258,7 @@ void ControllerUi::renderModePicker(const ControllerViewState &state,
                             p.panel);
     }
     _screen.setTextColor(selected ? p.accent : p.secondary,
-                         selected ? p.panel : p.background);
+                        selected ? p.panel : p.background);
     _screen.drawString(modeNames[index], _screen.width() / 2, y);
   }
   _screen.setTextColor(p.primary, p.background);
@@ -271,7 +272,7 @@ void ControllerUi::renderModePicker(const ControllerViewState &state,
 }
 
 void ControllerUi::renderController(const ControllerViewState &state,
-                                     uint32_t now, const Palette &p)
+                                      uint32_t now, const Palette &p)
 {
   _screen.fillScreen(p.background);
   _screen.setTextDatum(lgfx::textdatum_t::top_left);
@@ -282,6 +283,8 @@ void ControllerUi::renderController(const ControllerViewState &state,
       : state.airMouseMode   ? "AIR"
       : state.magnifierMode  ? "MAGN"
       : state.dpiMode        ? "SPEED"
+      : state.brightnessMode ? "BRT"
+      : state.sleepMode      ? "SLP"
       : state.navigationMode ? "NAV"
                              : "MOUSE";
   _screen.drawString(modeName, 8, 8);
@@ -301,370 +304,49 @@ void ControllerUi::renderController(const ControllerViewState &state,
 
   if (state.micMode)
   {
-    const char *status = "MIC UNAVAILABLE";
-    uint16_t statusColor = p.warning;
-    switch (state.micStatus)
-    {
-    case MicAudioStatus::Idle:
-      status = state.micSubscribed ? "AUDIO READY" : "CONNECT COMPANION";
-      statusColor = state.micSubscribed ? p.connected : p.warning;
-      break;
-    case MicAudioStatus::Live:
-      status = "LIVE STREAM";
-      statusColor = p.connected;
-      break;
-    case MicAudioStatus::Recording:
-      status = "RECORDING";
-      statusColor = p.warning;
-      break;
-    case MicAudioStatus::Sending:
-      status = "SENDING CLIP";
-      statusColor = p.connected;
-      break;
-    case MicAudioStatus::Error:
-      status = "MIC ERROR";
-      statusColor = p.error;
-      break;
-    case MicAudioStatus::Unavailable:
-      break;
-    }
-
-    _screen.fillRoundRect(6, 48, _screen.width() - 12, 72, 7, p.panel);
-    _screen.setTextDatum(lgfx::textdatum_t::top_center);
-    _screen.setFont(&fonts::Font0);
-    _screen.setTextColor(p.accent, p.panel);
-    _screen.drawString("BLE MICROPHONE", _screen.width() / 2, 60);
-    _screen.setFont(&fonts::Font2);
-    _screen.setTextColor(statusColor, p.panel);
-    _screen.drawString(status, _screen.width() / 2, 82);
-    _screen.setFont(&fonts::Font0);
-    drawClippedMarquee(_screen, "Hold stick: live stream", 8, 145,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Click: left | double-click: right", 8, 163,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "A: record / send clip", 8, 181,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Front/Enter: accept | Back/Esc: cancel", 8, 199,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Requires BLE audio companion", 8, 217,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    _screen.pushSprite(0, 0);
+    renderMicMode(state, now, p);
     return;
   }
 
   if (state.magnifierMode)
   {
-    _screen.fillRoundRect(6, 48, _screen.width() - 12, 100, 7, p.panel);
-    _screen.setTextDatum(lgfx::textdatum_t::top_center);
-    _screen.setFont(&fonts::Font0);
-    _screen.setTextColor(p.accent, p.panel);
-    _screen.drawString("WINDOWS MAGNIFIER", _screen.width() / 2, 60);
-    _screen.setFont(&fonts::Font2);
-    _screen.setTextColor(state.magnifierOpen ? p.connected : p.secondary,
-                         p.panel);
-    _screen.drawString(state.magnifierOpen ? "OPEN" : "CLOSED",
-                       _screen.width() / 2, 82);
-    _screen.setFont(&fonts::Font0);
-    char motion[24];
-    snprintf(motion, sizeof(motion), "MOTION LEVEL %u",
-             static_cast<unsigned>(state.motionLevel + 1));
-    _screen.setTextColor(p.secondary, p.panel);
-    _screen.drawString(motion, _screen.width() / 2, 104);
-    snprintf(motion, sizeof(motion), "X:%s  Y:%s",
-             state.motionFlipX ? "FLIP" : "NORM",
-             state.motionFlipY ? "FLIP" : "NORM");
-    _screen.drawString(motion, _screen.width() / 2, 122);
-    drawClippedMarquee(_screen, "Stick U/D: zoom", 8, 160,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Stick L/R or tilt: pan", 8, 178,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Click: open/close", 8, 196,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Double-click: cycle view", 8, 214,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "A/B: zoom | motion: Air Mouse", 8, 232,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    _screen.pushSprite(0, 0);
+    renderMagnifierMode(state, now, p);
     return;
   }
 
   if (state.airMouseMode)
   {
-    _screen.fillRoundRect(6, 48, _screen.width() - 12, 100, 7, p.panel);
-    _screen.setTextDatum(lgfx::textdatum_t::top_center);
-    _screen.setFont(&fonts::Font0);
-    _screen.setTextColor(p.accent, p.panel);
-    _screen.drawString("GYRO POINTER", _screen.width() / 2, 60);
-    char level[24];
-    snprintf(level, sizeof(level), "LEVEL %u / 7",
-             static_cast<unsigned>(state.motionLevel + 1));
-    _screen.setFont(&fonts::Font2);
-    _screen.setTextColor(p.primary, p.panel);
-    _screen.drawString(level, _screen.width() / 2, 82);
-    _screen.setFont(&fonts::Font0);
-    snprintf(level, sizeof(level), "X:%s  Y:%s",
-             state.motionFlipX ? "FLIP" : "NORM",
-             state.motionFlipY ? "FLIP" : "NORM");
-    _screen.setTextColor(p.secondary, p.panel);
-    _screen.drawString(level, _screen.width() / 2, 104);
-    _screen.setTextColor(state.motionFlipSaved ? p.secondary : p.warning,
-                         p.panel);
-    _screen.drawString(state.motionFlipSaved ? "AXIS SAVED" : "AXIS NOT SAVED",
-                       _screen.width() / 2, 122);
-    drawClippedMarquee(_screen, "Tilt to move the pointer", 8, 160,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Stick U/D: level", 8, 178,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Click/dbl: left/right", 8, 196,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "A: flip X  B: flip Y", 8, 214,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Hold stick: select mode", 8, 232,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    _screen.pushSprite(0, 0);
+    renderAirMouseMode(state, now, p);
     return;
   }
 
   if (state.dpiMode)
   {
-    _screen.fillRoundRect(6, 48, _screen.width() - 12, 112, 7, p.panel);
-    _screen.setTextDatum(lgfx::textdatum_t::top_center);
-    _screen.setFont(&fonts::Font0);
-    _screen.setTextColor(p.accent, p.panel);
-    _screen.drawString("POINTER / MOTION", _screen.width() / 2, 58);
-    char level[24];
-    snprintf(level, sizeof(level), "STICK  %u / 7",
-             static_cast<unsigned>(state.dpiLevel + 1));
-    _screen.setTextColor(p.primary, p.panel);
-    _screen.drawString(level, _screen.width() / 2, 80);
-    snprintf(level, sizeof(level), "MOTION %u / 7",
-             static_cast<unsigned>(state.motionLevel + 1));
-    _screen.drawString(level, _screen.width() / 2, 98);
-    _screen.setTextColor((state.dpiSaved && state.motionSaved)
-                             ? p.secondary
-                             : p.warning,
-                         p.panel);
-    _screen.drawString((state.dpiSaved && state.motionSaved)
-                           ? "SAVED"
-                           : "NOT SAVED",
-                       _screen.width() / 2, 120);
-    drawClippedMarquee(_screen, "Stick L/R: pointer speed", 8, 165,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Stick U/D: motion speed", 8, 181,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Click: save | hold stick: select mode", 8, 199,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "A: copy  B: paste | hold A: mic", 8, 217,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    if (state.joystickError)
-    {
-      drawClippedMarquee(_screen, "Joystick I2C error", 8, 233,
-                         _screen.width() - 16, 12, p.error,
-                         p.background, now);
-    }
-    _screen.pushSprite(0, 0);
+    renderDpiMode(state, now, p);
     return;
   }
 
   if (state.styleMode)
   {
-    _screen.fillRoundRect(6, 48, _screen.width() - 12, 120, 7, p.panel);
-    _screen.setTextDatum(lgfx::textdatum_t::top_center);
-    _screen.setFont(&fonts::Font0);
-    _screen.setTextColor(p.accent, p.panel);
-    _screen.drawString("STYLE - COLOR PALETTE", _screen.width() / 2, 60);
-
-    static const char *const paletteNames[] = {
-        "Default", "Dark", "Light", "High Contrast",
-        "Cyberpunk", "Monochrome", "Sepia", "Forest"};
-    constexpr uint8_t kPaletteCount = 8;
-
-    _screen.setFont(&fonts::Font0);
-    for (uint8_t i = 0; i < kPaletteCount; ++i)
-    {
-      const int16_t y = 82 + i * 14;
-      const bool isCurrent = i == state.colorPalette;
-      const bool isSelected = i == state.selectedPaletteIndex;
-      // Show selected palette with different indicator
-      _screen.setTextColor(isCurrent ? p.accent : (isSelected ? p.warning : p.secondary),
-                           p.panel);
-      char line[32];
-      snprintf(line, sizeof(line), "%s%s%s", paletteNames[i],
-               isCurrent ? " *" : "", isSelected && !isCurrent ? " >" : "");
-      _screen.drawString(line, _screen.width() / 2, y);
-    }
-
-    _screen.setTextColor(p.primary, p.background);
-    drawClippedMarquee(_screen, "Stick L/R: cycle palettes", 8, 190,
-                       _screen.width() - 16, 12, p.primary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Click: save palette", 8, 208,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    drawClippedMarquee(_screen, "Hold stick: select mode", 8, 226,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-    _screen.pushSprite(0, 0);
+    renderStyleMode(state, now, p);
     return;
   }
 
-  _screen.fillRoundRect(6, 42, _screen.width() - 12, 58, 7, p.panel);
-  _screen.setTextDatum(lgfx::textdatum_t::top_left);
-  _screen.setTextColor(p.accent, p.panel);
-  _screen.drawString("JOYSTICK", 14, 47);
-  if (state.navigationMode)
+  if (state.brightnessMode)
   {
-    drawClippedMarquee(_screen, "Move: scroll", 14, 62,
-                       _screen.width() - 28, 12, p.primary, p.panel,
-                       now);
-    drawClippedMarquee(_screen, "Click: Enter / dbl: Esc", 14, 78,
-                       _screen.width() - 28, 12, p.primary, p.panel,
-                       now);
-  }
-  else
-  {
-    drawClippedMarquee(_screen, "Move: pointer", 14, 62,
-                       _screen.width() - 28, 12, p.primary, p.panel,
-                       now);
-    drawClippedMarquee(_screen, "Click: left / dbl: right", 14, 78,
-                       _screen.width() - 28, 12, p.primary, p.panel,
-                       now);
+    renderBrightnessMode(state, now, p);
+    return;
   }
 
-  _screen.fillRoundRect(6, 108, _screen.width() - 12, 43, 7, p.panel);
-  _screen.setTextColor(p.accent, p.panel);
-  _screen.drawString("BUTTONS", 14, 114);
-  drawClippedMarquee(
-      _screen,
-      state.navigationMode ? "A/B: page up / down" : "A: copy  B: paste", 14,
-      130, _screen.width() - 28, 12, p.primary, p.panel, now);
-
-  drawClippedMarquee(_screen, "Gesture L/R: NO | F/B: YES", 8, 162,
-                     _screen.width() - 16, 12, p.secondary,
-                     p.background, now);
-  drawClippedMarquee(_screen, "Stick hold: select mode", 8,
-                     181, _screen.width() - 16, 12, p.secondary,
-                     p.background, now);
-  drawClippedMarquee(_screen, "Hold A: mic <-> last mode", 8, 198,
-                     _screen.width() - 16, 12, p.secondary,
-                     p.background, now);
-
-  if (state.joystickError)
+  if (state.sleepMode)
   {
-    drawClippedMarquee(_screen, "Joystick I2C error", 8, 220,
-                       _screen.width() - 16, 12, p.error, p.background,
-                       now);
+    renderSleepMode(state, now, p);
+    return;
   }
-  else if (now - state.lastValidInputAt > 1000)
-  {
-    drawClippedMarquee(_screen, "Waiting for joystick", 8, 220,
-                       _screen.width() - 16, 12, p.secondary,
-                       p.background, now);
-  }
-  _screen.pushSprite(0, 0);
+
+  renderMouseMode(state, now, p);
 }
 
-void ControllerUi::renderImuCube(const ControllerViewState &state, const Palette &p)
-{
-  constexpr float halfSize = 1.0f;
-  constexpr float scale = 37.0f;
-  constexpr float centerX = 67.5f;
-  constexpr float centerY = 126.0f;
-  const float sinRoll = sinf(state.roll);
-  const float cosRoll = cosf(state.roll);
-  const float sinPitch = sinf(state.pitch);
-  const float cosPitch = cosf(state.pitch);
-  const float sinYaw = sinf(state.yaw);
-  const float cosYaw = cosf(state.yaw);
 
-  _screen.fillScreen(p.background);
-  _screen.setTextColor(p.primary, p.background);
-  _screen.setTextDatum(lgfx::textdatum_t::top_left);
-  _screen.setFont(&fonts::Font0);
-  _screen.drawString("ORIENTATION", 8, 8);
-  drawBatteryStatus(_screen, state.batteryLevel, 8, p);
-  drawNetworkIdentity(_screen, state, millis(), p);
-  char baseOrientation[32];
-  snprintf(baseOrientation, sizeof(baseOrientation), "BASE %u DEG %s",
-           static_cast<unsigned>(state.pendingBaseRotation * 90),
-           state.orientationSaved ? "SAVED" : "UNSAVED");
-  _screen.setTextDatum(lgfx::textdatum_t::top_center);
-  _screen.setTextColor(state.orientationSaved ? p.secondary : p.warning,
-                       p.background);
-  _screen.drawString(baseOrientation, _screen.width() / 2, 32);
-
-  char orientation[40];
-  snprintf(orientation, sizeof(orientation), "R %.0f   P %.0f",
-           state.roll * kRadToDeg, state.pitch * kRadToDeg);
-  _screen.setTextColor(p.primary, p.background);
-  _screen.drawString(orientation, _screen.width() / 2, 43);
-  _screen.drawRoundRect(8, 54, _screen.width() - 16, 146, 10, p.border);
-
-  int16_t points[8][2] = {};
-  for (uint8_t i = 0; i < 8; ++i)
-  {
-    const float x = (i & 0x01) ? halfSize : -halfSize;
-    const float y = (i & 0x02) ? halfSize : -halfSize;
-    const float z = (i & 0x04) ? halfSize : -halfSize;
-    const float rollX = x;
-    const float rollY = y * cosRoll - z * sinRoll;
-    const float rollZ = y * sinRoll + z * cosRoll;
-    const float pitchX = rollX * cosPitch + rollZ * sinPitch;
-    const float pitchY = rollY;
-    const float yawX = pitchX * cosYaw - pitchY * sinYaw;
-    const float yawY = pitchX * sinYaw + pitchY * cosYaw;
-    points[i][0] = static_cast<int16_t>(centerX + scale * yawX);
-    points[i][1] = static_cast<int16_t>(centerY - scale * yawY);
-  }
-
-  for (uint8_t i = 0; i < 8; ++i)
-  {
-    for (uint8_t bit = 0; bit < 3; ++bit)
-    {
-      const uint8_t j = i ^ (1U << bit);
-      if (i < j)
-      {
-        _screen.drawLine(points[i][0], points[i][1], points[j][0], points[j][1],
-                         bit == 2 ? p.accent : p.primary);
-      }
-    }
-  }
-
-  // Draw the front face (z = -halfSize, indices 0, 1, 2, 3)
-  _screen.fillTriangle(points[0][0], points[0][1], points[1][0], points[1][1],
-                       points[2][0], points[2][1], p.secondary);
-  _screen.fillTriangle(points[0][0], points[0][1], points[2][0], points[2][1],
-                       points[3][0], points[3][1], p.secondary);
-
-  // Draw the back face (z = +halfSize, indices 4, 5, 6, 7)
-  _screen.fillTriangle(points[4][0], points[4][1], points[5][0], points[5][1],
-                       points[6][0], points[6][1], p.primary);
-  _screen.fillTriangle(points[4][0], points[4][1], points[6][0], points[6][1],
-                       points[7][0], points[7][1], p.primary);
-
-  _screen.setTextDatum(lgfx::textdatum_t::top_center);
-  _screen.setTextColor(p.secondary, p.background);
-  _screen.drawString("Front/Enter: accept | Back/Esc: cancel", _screen.width() / 2, 224);
-  _screen.pushSprite(0, 0);
-}
 
 } // namespace controller

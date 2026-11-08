@@ -1,4 +1,5 @@
 #include "ControllerFeatures.h"
+#include "ControllerConstants.h"
 
 #include <M5Unified.h>
 #include <Preferences.h>
@@ -11,159 +12,22 @@
 
 namespace controller
 {
-  namespace
-  {
 
-    constexpr uint8_t kJoystickAddress = 0x63;
-    constexpr uint8_t kJoystickOffsetRegister = 0x50;
-    constexpr uint8_t kJoystickButtonRegister = 0x20;
-    constexpr uint32_t kI2cFrequency = 400000;
-    constexpr uint8_t kJoystickProbeAttempts = 12;
-    constexpr uint32_t kJoystickProbeDelayMs = 100;
-    constexpr uint32_t kInputIntervalMs = 20;
-#ifndef INTERCOM_IDLE_SLEEP_MS
-#define INTERCOM_IDLE_SLEEP_MS 60000
-#endif
-    constexpr uint32_t kDefaultIdleSleepMs = INTERCOM_IDLE_SLEEP_MS;
-    constexpr int32_t kIdleMovementThreshold = 200;
-    constexpr uint32_t kBatteryIntervalMs = 5000;
-    constexpr uint32_t kModeHoldMs = 900;
-    constexpr uint32_t kClickMaxMs = 600;
-    constexpr uint32_t kButtonHoldMs = 700;
-    constexpr uint32_t kDoubleClickWindowMs = 350;
-    constexpr uint32_t kGestureCooldownMs = 800;
-    constexpr float kGestureRearmDps = 100.0f;
-    constexpr int32_t kJoystickOrientationThreshold = 900;
-    constexpr int32_t kJoystickCenterThreshold = 350;
-    constexpr float kGesturePitchDps = 240.0f;
-    constexpr float kGestureTwistDps = 300.0f;
-    constexpr float kDegToRad = 0.017453293f;
-    constexpr uint8_t kKeyC = 0x06;
-    constexpr uint8_t kKeyV = 0x19;
-    constexpr uint8_t kKeyM = 0x10;
-    constexpr uint8_t kKeyEnter = 0x28;
-    constexpr uint8_t kKeyEscape = 0x29;
-    constexpr uint8_t kKeyPageUp = 0x4B;
-    constexpr uint8_t kKeyArrowRight = 0x4F;
-    constexpr uint8_t kKeyArrowLeft = 0x50;
-    constexpr uint8_t kKeyArrowDown = 0x51;
-    constexpr uint8_t kKeyArrowUp = 0x52;
-    constexpr uint8_t kKeyPageDown = 0x4E;
-    constexpr uint8_t kKeypadMinus = 0x56;
-    constexpr uint8_t kKeypadPlus = 0x57;
-    constexpr uint8_t kModifierLeftControl = 0x01;
-    constexpr uint8_t kModifierLeftAlt = 0x04;
-    constexpr uint8_t kModifierLeftGui = 0x08;
-    constexpr uint8_t kModifierControlAlt =
-        kModifierLeftControl | kModifierLeftAlt;
 
-    // Windows Magnifier shortcuts: Win+keypad +/- zooms, Ctrl+Alt+arrows pan,
-    // Win+Esc closes, and Ctrl+Alt+M cycles full/lens/docked view.
-    constexpr uint32_t kMagnifierZoomRepeatMs = 220;
-    constexpr uint32_t kMagnifierPanRepeatMs = 130;
-    constexpr float kMagnifierPanMinDps = 12.0f;
-
-    // Air mouse tuning. The gyro supplies angular velocity; the exponential
-    // filter removes hand tremor while keeping the pointer responsive. The
-    // scales are pixels per degree of controller rotation: a comfortable
-    // 90-degree wrist turn must be able to cross a large desktop.
-    constexpr float kAirMouseDeadzoneDps = 2.0f;
-    constexpr float kAirMouseSmoothingSeconds = 0.045f;
-    constexpr float kAirMouseStopDps = 0.2f;
-    constexpr float kAirMouseBoostDps = 300.0f;
-    constexpr float kMotionScales[] = {5.0f, 8.0f, 12.0f, 18.0f,
-                                       26.0f, 36.0f, 50.0f};
-    constexpr uint32_t kMotionAdjustRepeatMs = 300;
-
-    // Picker order; kept separate from the persisted Mode values.
-    // VoiceCommand is intentionally excluded from the picker (use joystick hold).
-    constexpr ControllerFeatures::Mode kModeOrder[] = {
-        ControllerFeatures::Mode::Mouse,
-        ControllerFeatures::Mode::AirMouse,
-        ControllerFeatures::Mode::Navigation,
-        ControllerFeatures::Mode::Magnifier,
-        ControllerFeatures::Mode::Microphone,
-        ControllerFeatures::Mode::Dpi,
-        ControllerFeatures::Mode::Orientation,
-        ControllerFeatures::Mode::Style,
-    };
-    static_assert(sizeof(kModeOrder) / sizeof(kModeOrder[0]) ==
-                      ControllerFeatures::kModeCount - 1,
-                  "mode picker order must include every mode except VoiceCommand");
-
-    int8_t axisToMouse(int16_t value, uint8_t dpiLevel)
-    {
-      constexpr int32_t deadzone = 180;
-      constexpr int32_t maxValue = 2047;
-      constexpr int32_t maxSteps[] = {5, 8, 11, 14, 18, 24, 32};
-      const int32_t maxStep = maxSteps[std::min<uint8_t>(dpiLevel, 6)];
-      int32_t magnitude = value;
-      if (magnitude < 0)
-      {
-        magnitude = -magnitude;
-      }
-      if (magnitude <= deadzone)
-      {
-        return 0;
-      }
-
-      const int32_t normalized = std::min<int32_t>(
-          127, (magnitude - deadzone) * 127 / (maxValue - deadzone));
-      const int32_t step =
-          std::max<int32_t>(1, (normalized * normalized * maxStep) / (127 * 127));
-      return static_cast<int8_t>(value < 0 ? -step : step);
-    }
-
-    template <typename T>
-    void rotateAxes(T &x, T &y, uint8_t quarterTurns)
-    {
-      const T oldX = x;
-      const T oldY = y;
-      switch (quarterTurns & 0x03)
-      {
-      case 1:
-        x = -oldY;
-        y = oldX;
-        break;
-      case 2:
-        x = -oldX;
-        y = -oldY;
-        break;
-      case 3:
-        x = oldY;
-        y = -oldX;
-        break;
-      default:
-        break;
-      }
-    }
-
-    float removeDeadzone(float value, float deadzone)
-    {
-      const float magnitude = fabsf(value);
-      if (magnitude <= deadzone)
-      {
-        return 0.0f;
-      }
-      return value > 0.0f ? magnitude - deadzone : deadzone - magnitude;
-    }
-
-    int8_t clampMouseDelta(float value)
-    {
-      if (value > 127.0f)
-      {
-        return 127;
-      }
-      if (value < -127.0f)
-      {
-        return -127;
-      }
-      return static_cast<int8_t>(value);
-    }
-
-  } // namespace
-
-  constexpr uint8_t kPickerModeCount = 8;
+  constexpr ControllerFeatures::Mode kModeOrder[] = {
+      ControllerFeatures::Mode::Mouse,
+      ControllerFeatures::Mode::AirMouse,
+      ControllerFeatures::Mode::Navigation,
+      ControllerFeatures::Mode::Magnifier,
+      ControllerFeatures::Mode::Microphone,
+      ControllerFeatures::Mode::Dpi,
+      ControllerFeatures::Mode::Orientation,
+      ControllerFeatures::Mode::Style,
+      ControllerFeatures::Mode::Brightness,
+      ControllerFeatures::Mode::Sleep,
+  };
+  constexpr uint8_t kPickerModeCount =
+      sizeof(kModeOrder) / sizeof(kModeOrder[0]);
 
   uint8_t ControllerFeatures::modeOrderIndex(Mode mode)
   {
@@ -202,6 +66,10 @@ namespace controller
       return "magnifier";
     case Mode::Style:
       return "style";
+    case Mode::Brightness:
+      return "brightness";
+    case Mode::Sleep:
+      return "sleep";
     }
     return "unknown";
   }
@@ -276,6 +144,7 @@ namespace controller
     const uint8_t savedMotionFlipX = preferences.getUChar("mflipX", 0);
     const uint8_t savedMotionFlipY = preferences.getUChar("mflipY", 0);
     const uint32_t savedSleepMs = preferences.getUInt("sleepMs", kDefaultIdleSleepMs);
+    const uint8_t savedBrightness = preferences.getUChar("brightness", 180);
     preferences.end();
     if (savedRotation > 3 || savedMode >= kModeCount || savedFlipX > 1 ||
         savedFlipY > 1 || savedDpi > 6 || savedMotion > 6 ||
@@ -309,6 +178,9 @@ namespace controller
     _selectedPaletteIndex = static_cast<uint8_t>(_colorPalette);
     _styleSaved = true;
     _sleepTimeoutMs = savedSleepMs;
+    _brightness = savedBrightness;
+    _selectedSleepIndex = 1;
+    M5.Display.setBrightness(_brightness);
     _lastValidInputAt = millis();
     return true;
   }
@@ -400,6 +272,11 @@ namespace controller
     state.connected = connected;
     state.demoMode = _mode == Mode::Orientation;
     state.styleMode = _mode == Mode::Style;
+    state.brightnessMode = _mode == Mode::Brightness;
+    state.brightnessSaved = _brightnessSaved;
+    state.brightness = _brightness;
+    state.sleepMode = _mode == Mode::Sleep;
+    state.sleepTimeoutMs = _sleepTimeoutMs;
     state.orientationSaved = _orientationSaved;
     state.dpiSaved = _dpiSaved;
     state.motionSaved = _motionSaved;
@@ -566,6 +443,42 @@ namespace controller
     return true;
   }
 
+  bool ControllerFeatures::saveBrightness()
+  {
+    Preferences preferences;
+    if (!preferences.begin("blehid", false))
+    {
+      Serial.println("[controller] failed to open NVS to save brightness");
+      return false;
+    }
+    const size_t written = preferences.putUChar("brightness", _brightness);
+    preferences.end();
+    if (written != sizeof(uint8_t))
+    {
+      Serial.println("[controller] failed to persist brightness");
+      return false;
+    }
+    return true;
+  }
+
+  bool ControllerFeatures::saveSleepTimeout()
+  {
+    Preferences preferences;
+    if (!preferences.begin("blehid", false))
+    {
+      Serial.println("[controller] failed to open NVS to save sleep timeout");
+      return false;
+    }
+    const size_t written = preferences.putUInt("sleepMs", _sleepTimeoutMs);
+    preferences.end();
+    if (written != sizeof(uint32_t))
+    {
+      Serial.println("[controller] failed to persist sleep timeout");
+      return false;
+    }
+    return true;
+  }
+
   ControllerFeatures::ColorPalette ControllerFeatures::loadColorPalette()
   {
     Preferences preferences;
@@ -588,6 +501,14 @@ namespace controller
     if (mode == _mode)
     {
       return;
+    }
+    if (_mode == Mode::Brightness && !_brightnessSaved)
+    {
+      _brightnessSaved = saveBrightness();
+    }
+    if (_mode == Mode::Sleep)
+    {
+      saveSleepTimeout();
     }
     if (_mode == Mode::Microphone)
     {
@@ -643,6 +564,19 @@ namespace controller
       _styleSaved = true;
       _selectedPaletteIndex = static_cast<uint8_t>(_colorPalette);
       _lastStyleInputAt = millis();
+    }
+    if (_mode == Mode::Brightness)
+    {
+      _brightnessSaved = true;
+      _brightnessStickCentered = true;
+      _lastBrightnessAdjustAt = millis();
+      M5.Display.setBrightness(_brightness);
+    }
+    if (_mode == Mode::Sleep)
+    {
+      _sleepStickCentered = true;
+      _lastSleepAdjustAt = millis();
+      _brightnessSaved = true;
     }
     _orientationInitialized = false;
     _yaw = 0.0f;
@@ -787,6 +721,16 @@ namespace controller
       {
         zoomMagnifier(true);
       }
+      else if (_mode == Mode::Brightness)
+      {
+        _brightness = 255;
+        M5.Display.setBrightness(_brightness);
+        _brightnessSaved = false;
+      }
+      else if (_mode == Mode::Sleep)
+      {
+        enterDeepSleep();
+      }
       else if (_mode == Mode::Navigation)
       {
         _hid.sendKey(kKeyPageUp);
@@ -815,6 +759,19 @@ namespace controller
       else if (_mode == Mode::Magnifier)
       {
         zoomMagnifier(false);
+      }
+      else if (_mode == Mode::Brightness)
+      {
+        _brightness = 64;
+        M5.Display.setBrightness(_brightness);
+        _brightnessSaved = false;
+        Serial.println("[controller] brightness eco");
+      }
+      else if (_mode == Mode::Sleep)
+      {
+        _sleepTimeoutMs = 60000;
+        _selectedSleepIndex = 1;
+        Serial.println("[controller] sleep timeout reset");
       }
       else if (_mode == Mode::Navigation)
       {
@@ -963,31 +920,7 @@ namespace controller
 
     if (_mode == Mode::Orientation)
     {
-      if (std::abs(x) < kJoystickCenterThreshold)
-      {
-        _orientationStickCentered = true;
-      }
-      else if (_orientationStickCentered &&
-               std::abs(x) >= kJoystickOrientationThreshold)
-      {
-        _pendingBaseRotation =
-            (_pendingBaseRotation + (x > 0 ? 1 : 3)) & 0x03;
-        _orientationSaved = false;
-        _orientationStickCentered = false;
-        _orientationInitialized = false;
-        _yaw = 0.0f;
-        Serial.printf("[controller] pending base orientation: %u degrees\n",
-                      static_cast<unsigned>(_pendingBaseRotation * 90));
-      }
-
-      if (!joystick.buttonPressed && _lastJoystickButton &&
-          !_joystickHoldHandled &&
-          now - _joystickPressedAt <= kClickMaxMs)
-      {
-        _orientationSaved = saveOrientationSettings();
-      }
-      _lastJoystickButton = joystick.buttonPressed;
-      _haveMouseReport = false;
+      handleOrientationMode(joystick, now);
       return;
     }
 
@@ -1003,50 +936,7 @@ namespace controller
 
     if (_mode == Mode::Dpi)
     {
-      if (std::abs(x) < kJoystickCenterThreshold)
-      {
-        _dpiStickCentered = true;
-      }
-      else if (_dpiStickCentered &&
-               std::abs(x) >= kJoystickOrientationThreshold &&
-               now - _lastDpiAdjustAt >= 250)
-      {
-        if (x > 0 && _dpiLevel < 6)
-        {
-          ++_dpiLevel;
-        }
-        else if (x < 0 && _dpiLevel > 0)
-        {
-          --_dpiLevel;
-        }
-        _dpiStickCentered = false;
-        _lastDpiAdjustAt = now;
-        _dpiSaved = saveDpiLevel();
-        Serial.printf("[controller] mouse speed level %u (%s)\n",
-                      static_cast<unsigned>(_dpiLevel),
-                      _dpiSaved ? "saved" : "not saved");
-      }
-
-      if (std::abs(y) < kJoystickCenterThreshold)
-      {
-        _motionStickCentered = true;
-      }
-      else if (_motionStickCentered &&
-               std::abs(y) >= kJoystickOrientationThreshold &&
-               now - _lastMotionAdjustAt >= 250)
-      {
-        adjustMotionLevel(y < 0 ? 1 : -1, now);
-        _motionStickCentered = false;
-      }
-
-      if (!joystick.buttonPressed && _lastJoystickButton &&
-          !_joystickHoldHandled && now - _joystickPressedAt <= kClickMaxMs)
-      {
-        _dpiSaved = saveDpiLevel();
-        _motionSaved = saveMotionLevel();
-      }
-      _lastJoystickButton = joystick.buttonPressed;
-      _haveMouseReport = false;
+      handleDpiMode(x, y, now, joystick);
       return;
     }
 
@@ -1089,77 +979,19 @@ namespace controller
 
     if (_mode == Mode::Style)
     {
-      // Handle Style mode completely here - no mouse, no mode picker
-      JoystickState styleJoystick;
-      if (readJoystick(styleJoystick))
-      {
-        int32_t sx = styleJoystick.x;
-        int32_t sy = styleJoystick.y;
+      handleStyleMode(now, joystick);
+      return;
+    }
 
-        // Track button state locally for Style mode
-        static bool styleLastButton = false;
-        static uint32_t stylePressedAt = 0;
-        static bool styleHoldHandled = false;
+    if (_mode == Mode::Brightness)
+    {
+      handleBrightnessMode(x, now, joystick);
+      return;
+    }
 
-        if (styleJoystick.buttonPressed && !styleLastButton)
-        {
-          stylePressedAt = now;
-          styleHoldHandled = false;
-        }
-
-        // Horizontal movement: cycle palette preview
-        if (std::abs(sx) >= kJoystickOrientationThreshold)
-        {
-          if (_styleSaved)
-          {
-            if (sx < 0)
-            {
-              if (_selectedPaletteIndex == 0)
-                _selectedPaletteIndex = static_cast<uint8_t>(kPaletteCount) - 1;
-              else
-                --_selectedPaletteIndex;
-            }
-            else
-            {
-              _selectedPaletteIndex = (_selectedPaletteIndex + 1) % static_cast<uint8_t>(kPaletteCount);
-            }
-            _styleSaved = false;
-            Serial.printf("[controller] selected palette: %s\n", paletteName(static_cast<ColorPalette>(_selectedPaletteIndex)));
-          }
-        }
-        else
-        {
-          _styleSaved = true;
-        }
-
-        // Button click (short press): save palette
-        if (!styleJoystick.buttonPressed && styleLastButton &&
-            !styleHoldHandled &&
-            now - stylePressedAt <= kClickMaxMs)
-        {
-          _colorPalette = static_cast<ColorPalette>(_selectedPaletteIndex);
-          _styleSaved = saveColorPalette(_colorPalette);
-          Serial.printf("[controller] saved palette: %s (%s)\n",
-                        paletteName(_colorPalette), _styleSaved ? "saved" : "not saved");
-        }
-
-        // Long press (hold): exit to mode picker
-        if (styleJoystick.buttonPressed && !styleHoldHandled &&
-            now - stylePressedAt >= kModeHoldMs)
-        {
-          _modePickerActive = true;
-          _selectedMode = modeOrderIndex(_mode);
-          _modePickerStickCentered = std::abs(sx) < kJoystickCenterThreshold &&
-                                     std::abs(sy) < kJoystickCenterThreshold;
-          _modePickerIgnoreButtonRelease = true;
-          _havePendingJoystickClick = false;
-          styleHoldHandled = true;
-          Serial.println("[controller] mode selection opened from style");
-        }
-
-        styleLastButton = styleJoystick.buttonPressed;
-      }
-      _haveMouseReport = false;
+    if (_mode == Mode::Sleep)
+    {
+      handleSleepMode(x, now, joystick);
       return;
     }
 
@@ -1263,198 +1095,6 @@ namespace controller
     {
       handleGesture(gyroX, gyroY, now);
     }
-  }
-
-  void ControllerFeatures::updateMotionRates(float gyroX, float gyroZ, float dt)
-  {
-    // Horizontal movement comes from yaw; vertical movement comes from the
-    // base-rotated pitch axis. The same filtered rates feed both Air Mouse and
-    // Magnifier panning so their feel stays consistent.
-    float rawX = gyroZ;
-    float rawY = -gyroX;
-    if (_motionFlipX)
-    {
-      rawX = -rawX;
-    }
-    if (_motionFlipY)
-    {
-      rawY = -rawY;
-    }
-    rawX = removeDeadzone(rawX, kAirMouseDeadzoneDps);
-    rawY = removeDeadzone(rawY, kAirMouseDeadzoneDps);
-
-    const float alpha = 1.0f - expf(-dt / kAirMouseSmoothingSeconds);
-    _motionVelocityX += alpha * (rawX - _motionVelocityX);
-    _motionVelocityY += alpha * (rawY - _motionVelocityY);
-    if (fabsf(_motionVelocityX) < kAirMouseStopDps)
-    {
-      _motionVelocityX = 0.0f;
-    }
-    if (fabsf(_motionVelocityY) < kAirMouseStopDps)
-    {
-      _motionVelocityY = 0.0f;
-    }
-  }
-
-  void ControllerFeatures::handleAirMouse(float gyroX, float gyroZ, float dt)
-  {
-    updateMotionRates(gyroX, gyroZ, dt);
-
-    const float speed = sqrtf(_motionVelocityX * _motionVelocityX +
-                              _motionVelocityY * _motionVelocityY);
-    // Fast flicks get a gentle boost so a wrist turn can cross the whole
-    // desktop, while small movements stay precise.
-    const float boost =
-        1.0f + std::min(speed, kAirMouseBoostDps) / kAirMouseBoostDps;
-    const float scale =
-        kMotionScales[std::min<uint8_t>(_motionLevel, 6)] * boost;
-
-    _motionRemainderX += _motionVelocityX * scale * dt;
-    _motionRemainderY += _motionVelocityY * scale * dt;
-    _motionRemainderX =
-        std::max(-254.0f, std::min(254.0f, _motionRemainderX));
-    _motionRemainderY =
-        std::max(-254.0f, std::min(254.0f, _motionRemainderY));
-
-    const int8_t dx = clampMouseDelta(_motionRemainderX);
-    const int8_t dy = clampMouseDelta(_motionRemainderY);
-    if (dx != 0 || dy != 0 || !_haveMouseReport)
-    {
-      _hid.sendMouseReport(0, dx, dy);
-      _haveMouseReport = true;
-      _motionRemainderX -= dx;
-      _motionRemainderY -= dy;
-    }
-  }
-
-  void ControllerFeatures::handleAirMouseJoystick(int32_t x, int32_t y,
-                                                  uint32_t now)
-  {
-    (void)x;
-    const int32_t magnitude = std::abs(y);
-    if (magnitude < kJoystickCenterThreshold)
-    {
-      _airMouseStickCentered = true;
-      return;
-    }
-    if (magnitude < kJoystickOrientationThreshold)
-    {
-      return;
-    }
-
-    // Change one level per deflection, then repeat while the stick is held.
-    if (_airMouseStickCentered ||
-        now - _lastMotionAdjustAt >= kMotionAdjustRepeatMs)
-    {
-      adjustMotionLevel(y < 0 ? 1 : -1, now);
-      _airMouseStickCentered = false;
-      _lastMotionAdjustAt = now;
-    }
-  }
-
-  void ControllerFeatures::toggleMagnifier()
-  {
-    if (_magnifierOpen)
-    {
-      _hid.sendHotkey(kModifierLeftGui, kKeyEscape);
-      _magnifierOpen = false;
-      Serial.println("[magnifier] closed");
-    }
-    else
-    {
-      _hid.sendHotkey(kModifierLeftGui, kKeypadPlus);
-      _magnifierOpen = true;
-      _motionVelocityX = 0.0f;
-      _motionVelocityY = 0.0f;
-      _motionRemainderX = 0.0f;
-      _motionRemainderY = 0.0f;
-      _lastMagnifierPanAt = millis();
-      Serial.println("[magnifier] opened");
-    }
-  }
-
-  void ControllerFeatures::zoomMagnifier(bool zoomIn)
-  {
-    if (!_magnifierOpen && !zoomIn)
-    {
-      return;
-    }
-    _hid.sendHotkey(kModifierLeftGui,
-                    zoomIn ? kKeypadPlus : kKeypadMinus);
-    if (zoomIn)
-    {
-      _magnifierOpen = true;
-    }
-    Serial.printf("[magnifier] zoom %s\n", zoomIn ? "in" : "out");
-  }
-
-  void ControllerFeatures::panMagnifier(uint8_t key)
-  {
-    if (!_magnifierOpen)
-    {
-      return;
-    }
-    _hid.sendHotkey(kModifierControlAlt, key);
-  }
-
-  void ControllerFeatures::handleMagnifierJoystick(int32_t x, int32_t y,
-                                                   uint32_t now)
-  {
-    const bool zoomIn = y <= -kJoystickOrientationThreshold;
-    const bool zoomOut = y >= kJoystickOrientationThreshold;
-    if ((zoomIn || zoomOut) &&
-        now - _lastMagnifierZoomAt >= kMagnifierZoomRepeatMs)
-    {
-      zoomMagnifier(zoomIn);
-      _lastMagnifierZoomAt = now;
-    }
-
-    const bool panLeft = x <= -kJoystickOrientationThreshold;
-    const bool panRight = x >= kJoystickOrientationThreshold;
-    if ((panLeft || panRight) &&
-        now - _lastMagnifierPanAt >= kMagnifierPanRepeatMs)
-    {
-      panMagnifier(panLeft ? kKeyArrowLeft : kKeyArrowRight);
-      _lastMagnifierPanAt = now;
-    }
-  }
-
-  void ControllerFeatures::handleMagnifierMotion(float gyroX, float gyroZ,
-                                                 float dt, uint32_t now)
-  {
-    updateMotionRates(gyroX, gyroZ, dt);
-    if (!_magnifierOpen)
-    {
-      return;
-    }
-
-    const float magnitude =
-        std::max(fabsf(_motionVelocityX), fabsf(_motionVelocityY));
-    if (magnitude < kMagnifierPanMinDps)
-    {
-      return;
-    }
-
-    // Reuse the Air Mouse sensitivity and flips. Higher levels pan faster.
-    const float levelScale =
-        kMotionScales[std::min<uint8_t>(_motionLevel, 6)] / kMotionScales[3];
-    const float effective = magnitude * levelScale;
-    const float interval =
-        std::max(70.0f, std::min(220.0f, 220.0f - effective * 0.55f));
-    if (now - _lastMagnifierPanAt < static_cast<uint32_t>(interval))
-    {
-      return;
-    }
-
-    if (fabsf(_motionVelocityX) >= fabsf(_motionVelocityY))
-    {
-      panMagnifier(_motionVelocityX > 0.0f ? kKeyArrowRight : kKeyArrowLeft);
-    }
-    else
-    {
-      panMagnifier(_motionVelocityY > 0.0f ? kKeyArrowDown : kKeyArrowUp);
-    }
-    _lastMagnifierPanAt = now;
   }
 
   void ControllerFeatures::handleGesture(float gyroX, float gyroY,
