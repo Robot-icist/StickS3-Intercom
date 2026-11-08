@@ -79,6 +79,7 @@ namespace controller
         ControllerFeatures::Mode::Microphone,
         ControllerFeatures::Mode::Dpi,
         ControllerFeatures::Mode::Orientation,
+        ControllerFeatures::Mode::Style,
     };
     static_assert(sizeof(kModeOrder) / sizeof(kModeOrder[0]) ==
                       ControllerFeatures::kModeCount - 1,
@@ -156,7 +157,7 @@ namespace controller
 
   } // namespace
 
-  constexpr uint8_t kPickerModeCount = 7;
+  constexpr uint8_t kPickerModeCount = 8;
 
   uint8_t ControllerFeatures::modeOrderIndex(Mode mode)
   {
@@ -193,8 +194,34 @@ namespace controller
       return "air mouse";
     case Mode::Magnifier:
       return "magnifier";
+    case Mode::Style:
+      return "style";
     }
     return "unknown";
+  }
+
+  const char *ControllerFeatures::paletteName(ColorPalette palette)
+  {
+    switch (palette)
+    {
+    case ColorPalette::Default:
+      return "Default";
+    case ColorPalette::Dark:
+      return "Dark";
+    case ColorPalette::Light:
+      return "Light";
+    case ColorPalette::HighContrast:
+      return "High Contrast";
+    case ColorPalette::Cyberpunk:
+      return "Cyberpunk";
+    case ColorPalette::Monochrome:
+      return "Monochrome";
+    case ColorPalette::Sepia:
+      return "Sepia";
+    case ColorPalette::Forest:
+      return "Forest";
+    }
+    return "Unknown";
   }
 
   bool ControllerFeatures::begin()
@@ -268,6 +295,9 @@ namespace controller
     _motionFlipX = savedMotionFlipX != 0;
     _motionFlipY = savedMotionFlipY != 0;
     _mode = static_cast<Mode>(savedMode);
+    _colorPalette = loadColorPalette();
+    _selectedPaletteIndex = static_cast<uint8_t>(_colorPalette);
+    _styleSaved = true;
     _lastValidInputAt = millis();
     return true;
   }
@@ -320,16 +350,20 @@ namespace controller
     state.micStatus = _micAudio.status();
     state.connected = connected;
     state.demoMode = _mode == Mode::Orientation;
+    state.styleMode = _mode == Mode::Style;
     state.orientationSaved = _orientationSaved;
     state.dpiSaved = _dpiSaved;
     state.motionSaved = _motionSaved;
     state.motionFlipSaved = _motionFlipSaved;
+    state.styleSaved = _styleSaved;
     state.flipX = _mode == Mode::Orientation ? _pendingFlipX : _flipX;
     state.flipY = _mode == Mode::Orientation ? _pendingFlipY : _flipY;
     state.motionFlipX = _motionFlipX;
     state.motionFlipY = _motionFlipY;
     state.dpiLevel = _dpiLevel;
     state.motionLevel = _motionLevel;
+    state.colorPalette = static_cast<uint8_t>(_colorPalette);
+    state.selectedPaletteIndex = _selectedPaletteIndex;
     state.batteryLevel = _batteryLevel;
     state.joystickError = _joystickError;
     state.pendingBaseRotation = _pendingBaseRotation;
@@ -465,6 +499,41 @@ namespace controller
     return true;
   }
 
+  bool ControllerFeatures::saveColorPalette(ColorPalette palette)
+  {
+    Preferences preferences;
+    if (!preferences.begin("blehid", false))
+    {
+      Serial.println("[controller] failed to open NVS to save color palette");
+      return false;
+    }
+    const size_t written = preferences.putUChar("palette", static_cast<uint8_t>(palette));
+    preferences.end();
+    if (written != sizeof(uint8_t))
+    {
+      Serial.println("[controller] failed to persist color palette");
+      return false;
+    }
+    return true;
+  }
+
+  ControllerFeatures::ColorPalette ControllerFeatures::loadColorPalette()
+  {
+    Preferences preferences;
+    if (!preferences.begin("blehid", true))
+    {
+      Serial.println("[controller] failed to open NVS to load color palette");
+      return ColorPalette::Default;
+    }
+    const uint8_t saved = preferences.getUChar("palette", 0);
+    preferences.end();
+    if (saved < static_cast<uint8_t>(kPaletteCount))
+    {
+      return static_cast<ColorPalette>(saved);
+    }
+    return ColorPalette::Default;
+  }
+
   void ControllerFeatures::applyMode(Mode mode)
   {
     if (mode == _mode)
@@ -519,6 +588,12 @@ namespace controller
     {
       _lastMagnifierZoomAt = millis();
       _lastMagnifierPanAt = millis();
+    }
+    if (_mode == Mode::Style)
+    {
+      _styleSaved = true;
+      _selectedPaletteIndex = static_cast<uint8_t>(_colorPalette);
+      _lastStyleInputAt = millis();
     }
     _orientationInitialized = false;
     _yaw = 0.0f;
@@ -949,6 +1024,82 @@ namespace controller
     if (_mode == Mode::Magnifier)
     {
       handleMagnifierJoystick(x, y, now);
+      return;
+    }
+
+    if (_mode == Mode::Style)
+    {
+      // Handle Style mode completely here - no mouse, no mode picker
+      JoystickState styleJoystick;
+      if (readJoystick(styleJoystick))
+      {
+        int32_t sx = styleJoystick.x;
+        int32_t sy = styleJoystick.y;
+
+        // Track button state locally for Style mode
+        static bool styleLastButton = false;
+        static uint32_t stylePressedAt = 0;
+        static bool styleHoldHandled = false;
+
+        if (styleJoystick.buttonPressed && !styleLastButton)
+        {
+          stylePressedAt = now;
+          styleHoldHandled = false;
+        }
+
+        // Horizontal movement: cycle palette preview
+        if (std::abs(sx) >= kJoystickOrientationThreshold)
+        {
+          if (_styleSaved)
+          {
+            if (sx < 0)
+            {
+              if (_selectedPaletteIndex == 0)
+                _selectedPaletteIndex = static_cast<uint8_t>(kPaletteCount) - 1;
+              else
+                --_selectedPaletteIndex;
+            }
+            else
+            {
+              _selectedPaletteIndex = (_selectedPaletteIndex + 1) % static_cast<uint8_t>(kPaletteCount);
+            }
+            _styleSaved = false;
+            Serial.printf("[controller] selected palette: %s\n", paletteName(static_cast<ColorPalette>(_selectedPaletteIndex)));
+          }
+        }
+        else
+        {
+          _styleSaved = true;
+        }
+
+        // Button click (short press): save palette
+        if (!styleJoystick.buttonPressed && styleLastButton &&
+            !styleHoldHandled &&
+            now - stylePressedAt <= kClickMaxMs)
+        {
+          _colorPalette = static_cast<ColorPalette>(_selectedPaletteIndex);
+          _styleSaved = saveColorPalette(_colorPalette);
+          Serial.printf("[controller] saved palette: %s (%s)\n",
+                        paletteName(_colorPalette), _styleSaved ? "saved" : "not saved");
+        }
+
+        // Long press (hold): exit to mode picker
+        if (styleJoystick.buttonPressed && !styleHoldHandled &&
+            now - stylePressedAt >= kModeHoldMs)
+        {
+          _modePickerActive = true;
+          _selectedMode = modeOrderIndex(_mode);
+          _modePickerStickCentered = std::abs(sx) < kJoystickCenterThreshold &&
+                                     std::abs(sy) < kJoystickCenterThreshold;
+          _modePickerIgnoreButtonRelease = true;
+          _havePendingJoystickClick = false;
+          styleHoldHandled = true;
+          Serial.println("[controller] mode selection opened from style");
+        }
+
+        styleLastButton = styleJoystick.buttonPressed;
+      }
+      _haveMouseReport = false;
       return;
     }
 

@@ -8,6 +8,21 @@
 namespace controller
 {
 
+  struct Palette
+  {
+    uint16_t background;
+    uint16_t panel;
+    uint16_t border;
+    uint16_t primary;
+    uint16_t secondary;
+    uint16_t accent;
+    uint16_t connected;
+    uint16_t warning;
+    uint16_t error;
+  };
+
+  const Palette &getPalette(uint8_t paletteIndex);
+
   struct ControllerViewState
   {
     bool navigationMode = false;
@@ -27,12 +42,16 @@ namespace controller
     bool dpiSaved = true;
     bool motionSaved = true;
     bool motionFlipSaved = true;
+    bool styleMode = false;
+    bool styleSaved = true;
     bool flipX = false;
     bool flipY = false;
     bool motionFlipX = false;
     bool motionFlipY = false;
     uint8_t dpiLevel = 3;
     uint8_t motionLevel = 3;
+    uint8_t colorPalette = 0;
+    uint8_t selectedPaletteIndex = 0;
     int8_t batteryLevel = -1;
     bool joystickError = false;
     char deviceName[32] = {};
@@ -54,9 +73,9 @@ namespace controller
     void render(const ControllerViewState &state, uint32_t now);
 
   private:
-    void renderController(const ControllerViewState &state, uint32_t now);
-    void renderModePicker(const ControllerViewState &state, uint32_t now);
-    void renderImuCube(const ControllerViewState &state);
+    void renderController(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderModePicker(const ControllerViewState &state, uint32_t now, const Palette &p);
+    void renderImuCube(const ControllerViewState &state, const Palette &p);
 
     LGFX_Sprite _screen{&M5.Display};
   };

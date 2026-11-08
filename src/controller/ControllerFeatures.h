@@ -23,8 +23,23 @@ namespace controller
       Microphone = 4,
       AirMouse = 5,
       Magnifier = 6,
+      Style = 7,
     };
-    static constexpr uint8_t kModeCount = 8;
+    static constexpr uint8_t kModeCount = 9;
+
+    // Color palettes for the UI
+    enum class ColorPalette : uint8_t
+    {
+      Default = 0,    // Current default palette
+      Dark = 1,       // Darker theme
+      Light = 2,      // Light theme
+      HighContrast = 3, // High contrast for accessibility
+      Cyberpunk = 4,  // Neon/cyberpunk theme
+      Monochrome = 5, // Monochrome/grayscale
+      Sepia = 6,      // Sepia/vintage theme
+      Forest = 7,     // Forest green theme
+    };
+    static constexpr uint8_t kPaletteCount = 8;
 
     ControllerFeatures(BleHidDevice &hid, BleMicAudio &micAudio)
         : _hid(hid), _micAudio(micAudio) {}
@@ -49,6 +64,8 @@ namespace controller
     bool saveMotionLevel();
     bool saveMotionFlips();
     bool saveMode(Mode mode);
+    bool saveColorPalette(ColorPalette palette);
+    ColorPalette loadColorPalette();
     void applyMode(Mode mode);
     void toggleMicrophoneMode();
     void toggleJoystickFlip(bool flipX);
@@ -71,6 +88,7 @@ namespace controller
     static uint8_t modeOrderIndex(Mode mode);
     static Mode modeAtOrderIndex(uint8_t index);
     static const char *modeName(Mode mode);
+    static const char *paletteName(ColorPalette palette);
 
     BleHidDevice &_hid;
     BleMicAudio &_micAudio;
@@ -98,6 +116,10 @@ namespace controller
     bool _havePendingJoystickClick = false;
     bool _joystickHoldHandled = false;
     bool _gestureArmed = true;
+    bool _styleSaved = true;
+    ColorPalette _colorPalette = ColorPalette::Default;
+    uint8_t _selectedPaletteIndex = 0;
+    uint32_t _lastStyleInputAt = 0;
     bool _havePreviousImu = false;
     bool _joystickError = false;
     bool _flipX = false;
