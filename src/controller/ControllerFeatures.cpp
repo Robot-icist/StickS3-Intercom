@@ -13,7 +13,6 @@
 namespace controller
 {
 
-
   constexpr ControllerFeatures::Mode kModeOrder[] = {
       ControllerFeatures::Mode::Mouse,
       ControllerFeatures::Mode::AirMouse,
@@ -101,7 +100,13 @@ namespace controller
   bool ControllerFeatures::begin()
   {
     _lastBatteryAt = millis();
+    _lastJoystickRecoveryAt = millis();
     readBatteryLevel();
+
+    // The Joystick2 is powered from the switchable Grove 5V rail. Keep this
+    // here as well as in setup() so the recovery power cycle below always
+    // starts from a known state.
+    M5.Power.setExtOutput(true);
 
     if (!M5.Imu.isEnabled())
     {
@@ -113,7 +118,7 @@ namespace controller
     bool joystickFound = false;
     for (uint8_t attempt = 0; attempt < kJoystickProbeAttempts; ++attempt)
     {
-      if (M5.Ex_I2C.scanID(kJoystickAddress, kI2cFrequency))
+      if (joystickResponds())
       {
         joystickFound = true;
         break;
@@ -300,16 +305,84 @@ namespace controller
     return state;
   }
 
+  bool ControllerFeatures::readJoystickRegister(uint8_t address, uint8_t reg,
+                                                uint8_t *data, size_t length)
+  {
+    // Phase 1: write the register pointer and terminate with a STOP. The
+    // unit's firmware prepares the reply in its STOP handler and disarms its
+    // I2C stop-timeout latch; a repeated START would leave that latch armed
+    // for the whole read phase and any aborted read would wedge it.
+    if (!M5.Ex_I2C.writeRegister(address, reg, nullptr, 0, kI2cFrequency))
+    {
+      // Ensure any partial transaction is cleaned up.
+      M5.Ex_I2C.stop();
+      return false;
+    }
+    // The STM32 services I2C and its continuous ADC from same-priority
+    // interrupts, so give it a moment to copy the reply before the read
+    // address arrives.
+    delayMicroseconds(kJoystickInterPhaseDelayUs);
+
+    // Phase 2: separate read transfer, NACKing the last byte before the STOP.
+    if (!M5.Ex_I2C.start(address, true, kI2cFrequency))
+    {
+      M5.Ex_I2C.stop();
+      return false;
+    }
+    const bool readOk = M5.Ex_I2C.read(data, length, true);
+    // Always issue a STOP to disarm the slave's stop-timeout latch.
+    // Without this, the STM32 would re-initialise its I2C peripheral every
+    // ~510 ms, NACKing inside each re-init window and never clearing
+    // controller error flags.
+    M5.Ex_I2C.stop();
+    // Brief delay after STOP to let the slave settle before the next transaction.
+    delayMicroseconds(kJoystickInterPhaseDelayUs);
+    return readOk;
+  }
+
+  bool ControllerFeatures::joystickResponds()
+  {
+    uint8_t axes[4] = {};
+    uint8_t button = 1;
+    // Attempt the first read; if it fails, reset the I2C bus before retrying
+    // so a lone glitch does not cascade into a persistent error.
+    if (!readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister, axes,
+                              sizeof(axes)))
+    {
+      resetI2CBus();
+    }
+    // Second register read; the bus should now be stable.
+    uint8_t btn = 1;
+    return readJoystickRegister(kJoystickAddress, kJoystickButtonRegister,
+                                &btn, sizeof(button)) &&
+           // Consider the unit responding if we successfully read both
+           // registers and got non‑zero data (i.e. not all zeros from a
+           // completely dead transfer).
+           (axes[0] | axes[1] | axes[2] | axes[3] | btn) != 0;
+  }
+
   bool ControllerFeatures::readJoystick(JoystickState &state)
   {
     uint8_t axes[4] = {};
     uint8_t button = 1;
-    if (!M5.Ex_I2C.readRegister(kJoystickAddress, kJoystickOffsetRegister, axes,
-                                sizeof(axes), kI2cFrequency) ||
-        !M5.Ex_I2C.readRegister(kJoystickAddress, kJoystickButtonRegister,
-                                &button, sizeof(button), kI2cFrequency))
+    bool ok = readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister,
+                                   axes, sizeof(axes)) &&
+              readJoystickRegister(kJoystickAddress, kJoystickButtonRegister,
+                                   &button, sizeof(button));
+    if (!ok)
     {
-      return false;
+      // The unit tolerates a single disturbed transfer; retry once so a lone
+      // glitch does not start the error counter.
+      resetI2CBus();
+      delayMicroseconds(kJoystickInterPhaseDelayUs);
+      ok = readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister, axes,
+                                sizeof(axes)) &&
+           readJoystickRegister(kJoystickAddress, kJoystickButtonRegister,
+                                &button, sizeof(button));
+      if (!ok)
+      {
+        return false;
+      }
     }
 
     state.x = static_cast<int16_t>(
@@ -320,6 +393,194 @@ namespace controller
         (static_cast<uint16_t>(axes[3]) << 8));
     state.buttonPressed = button == 0;
     return true;
+  }
+
+  bool ControllerFeatures::rebootJoystick()
+  {
+    // Register 0xFD is the unit firmware's IAP entry: writing 0xFD,0x01 makes
+    // the STM32 reset immediately instead of waiting for the Grove rail.
+    const uint8_t reboot = kJoystickRebootValue;
+    if (!M5.Ex_I2C.writeRegister(kJoystickAddress, kJoystickRebootRegister,
+                                 &reboot, 1, kI2cFrequency))
+    {
+      return false;
+    }
+    // The bootloader waits 300 ms before handing over to the application.
+    delay(kJoystickRebootSettleMs);
+    M5.Ex_I2C.release();
+    M5.Ex_I2C.begin();
+    for (uint8_t attempt = 0; attempt < kJoystickRecoveryProbeAttempts;
+         ++attempt)
+    {
+      if (joystickResponds())
+      {
+        return true;
+      }
+      delay(kJoystickProbeDelayMs);
+    }
+    return false;
+  }
+
+  void ControllerFeatures::powerCycleJoystickRail()
+  {
+    // First, perform a pure I2C bus reset to clear any stuck slave state
+    // before power-cycling the Grove rail. This often resolves issues where
+    // the STM32's stop-timeout latch is armed and the bus appears locked.
+    resetI2CBus();
+
+    M5.Ex_I2C.release();
+
+    const int sda = M5.Ex_I2C.getSDA();
+    const int scl = M5.Ex_I2C.getSCL();
+    // Sink both lines while the rail is down: the ESP32 pull-ups would
+    // otherwise feed the unit's 3.3V rail through its ESD diodes and keep the
+    // STM32 above its power-on reset threshold.
+    if (sda >= 0)
+    {
+      pinMode(sda, OUTPUT);
+      digitalWrite(sda, LOW);
+    }
+    if (scl >= 0)
+    {
+      pinMode(scl, OUTPUT);
+      digitalWrite(scl, LOW);
+    }
+
+    M5.Power.setExtOutput(false);
+    const bool railOff = M5.Power.getExtOutput();
+    delay(kJoystickPowerCycleOffMs);
+    M5.Power.setExtOutput(true);
+    const bool railRestored = M5.Power.getExtOutput();
+    delay(kJoystickPowerCycleSettleMs);
+    // Proves the PM1 actually gated the Grove rail; without this the unit's
+    // STM32 never resets and no power-cycle recovery can ever work.
+    Serial.printf("[controller] Grove 5V off=%d restored=%d\n",
+                  static_cast<int>(railOff), static_cast<int>(railRestored));
+
+    if (sda >= 0)
+    {
+      pinMode(sda, INPUT);
+    }
+    if (scl >= 0)
+    {
+      pinMode(scl, INPUT);
+    }
+    M5.Ex_I2C.begin();
+  }
+
+  bool ControllerFeatures::resetI2CBus()
+  {
+    // Release the I2C controller so the pins become GPIO inputs with pull-ups.
+    M5.Ex_I2C.release();
+    // Reinitialise the I2C peripheral; this clears the controller's internal
+    // state machine and FIFO buffers.
+    M5.Ex_I2C.begin();
+    // Give the STM32 joystick firmware a moment to process the bus reset.
+    // Its stop-timeout latch is cleared on every STOP condition, so reopening
+    // the port forces a known idle state.
+    delay(5);
+    // Generate a STOP condition by driving SCL low then high while SDA is
+    // high. This is handled by the I2C begin() call above, but we add an
+    // extra small delay to ensure the slave has time to release SDA.
+    delayMicroseconds(100);
+    return true;
+  }
+
+  uint8_t ControllerFeatures::findJoystickAddress()
+  {
+    // The unit keeps its I2C address in flash, so a disturbed write to its
+    // 0xFF register can move it away from 0x63. Identify it by the firmware
+    // version and the address it reports about itself.
+    for (uint8_t address = 0x08; address < 0x78; ++address)
+    {
+      if (address == kJoystickAddress ||
+          !M5.Ex_I2C.scanID(address, kI2cFrequency))
+      {
+        continue;
+      }
+      uint8_t version = 0;
+      uint8_t storedAddress = 0;
+      if (!readJoystickRegister(address, kJoystickFirmwareVersionRegister,
+                                &version, 1) ||
+          !readJoystickRegister(address, kJoystickAddressRegister,
+                                &storedAddress, 1))
+      {
+        continue;
+      }
+      Serial.printf(
+          "[controller] device at 0x%02X reports fw=%u address=0x%02X\n",
+          static_cast<unsigned>(address), static_cast<unsigned>(version),
+          static_cast<unsigned>(storedAddress));
+      if (storedAddress == address && version >= 1 && version <= 0x0F)
+      {
+        return address;
+      }
+    }
+    return 0;
+  }
+
+  bool ControllerFeatures::recoverJoystick()
+  {
+    // First step: reset the I2C controller and clock the bus free. M5GFX's
+    // init() drives nine SCL pulses and a STOP before reopening the port, which
+    // releases a slave that is stuck holding the bus.
+    if (!resetI2CBus())
+    {
+      Serial.println("[controller] Failed to reset I2C bus");
+    }
+    if (joystickResponds())
+    {
+      Serial.println("[controller] Joystick2 recovered after bus reset");
+      return true;
+    }
+
+    // Second step: the unit may have lost its programmed address.
+    const uint8_t found = findJoystickAddress();
+    if (found != 0)
+    {
+      const uint8_t target = kJoystickAddress;
+      if (M5.Ex_I2C.writeRegister(found, kJoystickAddressRegister, &target, 1,
+                                  kI2cFrequency))
+      {
+        // The unit writes the new address to flash and re-opens its slave.
+        delay(kJoystickAddressRestoreMs);
+        M5.Ex_I2C.release();
+        M5.Ex_I2C.begin();
+        if (joystickResponds())
+        {
+          Serial.printf(
+              "[controller] Joystick2 address 0x%02X restored to 0x%02X\n",
+              static_cast<unsigned>(found),
+              static_cast<unsigned>(kJoystickAddress));
+          return true;
+        }
+      }
+    }
+
+    // Third step: reboot the unit through its own firmware. This clears any
+    // latched I2C error state without touching the Grove rail.
+    if (rebootJoystick())
+    {
+      Serial.println("[controller] Joystick2 recovered after unit reboot");
+      return true;
+    }
+
+    // Fourth step: a real power cycle of the switchable Grove 5V rail.
+    Serial.println("[controller] Joystick2 power cycling Grove 5V");
+    powerCycleJoystickRail();
+    for (uint8_t attempt = 0; attempt < kJoystickRecoveryProbeAttempts;
+         ++attempt)
+    {
+      if (joystickResponds())
+      {
+        Serial.println("[controller] Joystick2 recovered after power cycle");
+        return true;
+      }
+      delay(kJoystickProbeDelayMs);
+    }
+
+    Serial.println("[controller] Joystick2 recovery failed; will retry later");
+    return false;
   }
 
   bool ControllerFeatures::saveOrientationSettings()
@@ -834,11 +1095,32 @@ namespace controller
       {
         Serial.println("[controller] Joystick2 I2C read failed");
       }
+      if (_joystickErrorCount >= kJoystickRecoveryThreshold &&
+          now - _lastJoystickRecoveryAt >=
+              kJoystickRecoveryIntervalMs + _joystickRecoveryBackoffMs)
+      {
+        _lastJoystickRecoveryAt = now;
+        if (recoverJoystick())
+        {
+          _joystickError = false;
+          _joystickErrorCount = 0;
+          _joystickRecoveryBackoffMs = 0;
+        }
+        else
+        {
+          _joystickRecoveryBackoffMs =
+              _joystickRecoveryBackoffMs == 0
+                  ? kJoystickRecoveryIntervalMs
+                  : std::min(_joystickRecoveryBackoffMs * 2,
+                             kJoystickRecoveryMaxBackoffMs);
+        }
+      }
       return;
     }
 
     _joystickError = false;
     _joystickErrorCount = 0;
+    _joystickRecoveryBackoffMs = 0;
     if (std::abs(joystick.x) >= kIdleMovementThreshold ||
         std::abs(joystick.y) >= kIdleMovementThreshold ||
         joystick.buttonPressed)
@@ -1108,8 +1390,7 @@ namespace controller
 
     if (!_gestureArmed)
     {
-      if (fabsf(gyroX) < kGestureRearmDps &&
-          fabsf(gyroY) < kGestureRearmDps)
+      if (fabsf(gyroX) < kGestureRearmDps && fabsf(gyroY) < kGestureRearmDps)
       {
         _gestureArmed = true;
       }
@@ -1209,5 +1490,4 @@ namespace controller
        above cover the explicit "button pressed/clicked" requirement. */
     esp_deep_sleep_start();
   }
-
 } // namespace controller

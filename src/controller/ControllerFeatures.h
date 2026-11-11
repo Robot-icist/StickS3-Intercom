@@ -63,6 +63,14 @@ namespace controller
     };
 
     bool readJoystick(JoystickState &state);
+    bool readJoystickRegister(uint8_t address, uint8_t reg, uint8_t *data,
+                              size_t length);
+    bool joystickResponds();
+    bool recoverJoystick();
+    bool rebootJoystick();
+    void powerCycleJoystickRail();
+    bool resetI2CBus();
+    uint8_t findJoystickAddress();
     bool saveOrientationSettings();
     bool saveDpiLevel();
     bool saveMotionLevel();
@@ -175,6 +183,8 @@ namespace controller
     uint32_t _lastImuAt = 0;
     uint32_t _lastBatteryAt = 0;
     uint32_t _lastJoystickLogAt = 0;
+    uint32_t _lastJoystickRecoveryAt = 0;
+    uint32_t _joystickRecoveryBackoffMs = 0;
     uint32_t _lastGestureAt = 0;
     uint32_t _lastValidInputAt = 0;
     uint32_t _sleepTimeoutMs = 60000;

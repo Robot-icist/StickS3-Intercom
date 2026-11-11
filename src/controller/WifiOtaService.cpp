@@ -55,7 +55,6 @@ void updateOtaStatusText(const char *status) {
   auto &d = M5.Display;
   const int w = d.width();
   const int h = d.height();
-  const int by = h / 2 - 6;
   d.fillRect(w / 2 - 70, h / 2 - 32, 140, 12, 0x0000);
   d.setTextDatum(lgfx::textdatum_t::top_center);
   d.setFont(&fonts::Font0);
@@ -359,42 +358,231 @@ void WifiOtaService::startConfigPortal() {
     Serial.println("[wifi] Captive DNS failed; setup remains at http://192.168.4.1/");
   }
 
+  // Main page with network scanning and click-to-prefill
   _portal.on("/", HTTP_GET, [this]() {
     _portal.send(
         200, "text/html",
-        "<!doctype html><meta name='viewport' content='width=device-width'>"
-        "<title>StickS3 Wi-Fi setup</title><h2>StickS3 Wi-Fi setup</h2>"
-        "<form method='post' action='/connect'>"
-        "<label>Wi-Fi name (SSID)<br><input name='ssid' required></label><br>"
-        "<label>Wi-Fi password<br><input name='password' type='password'></label><br>"
-        "<button>Save and connect</button></form>");
+        "<!doctype html>"
+        "<html>"
+        "<head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>StickS3 Wi-Fi Setup</title>"
+        "<style>"
+        "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 400px; margin: 2rem auto; padding: 1rem; background: #fafafa; }"
+        "h1 { color: #333; font-size: 1.5rem; margin-bottom: 0.5rem; }"
+        ".subtitle { color: #666; margin-bottom: 1.5rem; font-size: 0.9rem; }"
+        ".form-group { margin-bottom: 1rem; background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }"
+        "label { display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem; color: #333; }"
+        "input { width: 100%; padding: 0.75rem; font-size: 1rem; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; }"
+        "input:focus { outline: none; border-color: #007bff; box-shadow: 0 0 0 2px rgba(0,123,255,0.2); }"
+        "button { width: 100%; padding: 1rem; font-size: 1.1rem; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }"
+        "button:disabled { background: #ccc; cursor: not-allowed; }"
+        "button:hover:not(:disabled) { background: #0056b3; }"
+        ".networks { max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background: white; }"
+        ".network-item { padding: 0.75rem 1rem; cursor: pointer; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }"
+        ".network-item:last-child { border-bottom: none; }"
+        ".network-item:hover { background: #f5f5f5; }"
+        ".network-item.selected { background: #e7f1ff; }"
+        ".network-info { display: flex; flex-direction: column; }"
+        ".network-ssid { font-weight: 500; color: #333; }"
+        ".network-meta { font-size: 0.75rem; color: #666; margin-top: 0.25rem; }"
+        ".signal { font-size: 0.75rem; color: #666; white-space: nowrap; margin-left: 0.5rem; }"
+        ".lock { color: #007bff; }"
+        ".unlock { color: #28a745; }"
+        "#status { margin-top: 1rem; text-align: center; font-size: 0.9rem; min-height: 1.2em; }"
+        ".success { color: #28a745; }"
+        ".error { color: #dc3545; }"
+        ".info { color: #007bff; }"
+        "</style>"
+        "</head>"
+        "<body>"
+        "<h1>StickS3 Wi-Fi Setup</h1>"
+        "<p class='subtitle'>Select or enter WiFi network:</p>"
+        "<div class='form-group'>"
+        "<label>Available Networks</label>"
+        "<div class='networks' id='networks'>Scanning...</div>"
+        "</div>"
+        "<div class='form-group'>"
+        "<label>SSID</label>"
+        "<input type='text' id='ssid' placeholder='Network name' autocomplete='off'>"
+        "</div>"
+        "<div class='form-group'>"
+        "<label>Password</label>"
+        "<input type='password' id='pass' placeholder='Password (leave empty for open)' autocomplete='off'>"
+        "</div>"
+        "<button id='connectBtn' onclick='connect()'>Connect</button>"
+        "<p id='status'></p>"
+
+        "<script>"
+        "let selectedSsid = '';"
+        "async function scan() {"
+        "  const res = await fetch('/scan');"
+        "  const nets = await res.json();"
+        "  const div = document.getElementById('networks');"
+        "  if (nets.length === 0) {"
+        "    div.innerHTML = '<div class=\"network-item\" style=\"color:#999;text-align:center\">No networks found</div>';"
+        "    return;"
+        "  }"
+        "  div.innerHTML = nets.map(function(n) {"
+        "    var ssidEscaped = n.ssid.replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");"
+        "    return '<div class=\"network-item\" onclick=\"selectNet(\\'' + ssidEscaped + '\\', ' + n.rssi + ', ' + n.enc + ')\">'"
+        "  + '<div class=\"network-info\">'"
+        "  + '<span class=\"network-ssid\">' + n.ssid + '</span>'"
+        "  + '<span class=\"network-meta\">' + n.rssi + ' dBm ' + (n.enc ? '<span class=\"lock\">&#128274;</span>' : '<span class=\"unlock\">&#128275;</span>') + '</span>'"
+        "  + '</div>'"
+        "  + '<span class=\"signal\">' + signalBars(n.rssi) + '</span>'"
+        "  + '</div>';"
+        "  }).join('');"
+        "}"
+        "function signalBars(rssi) {"
+        "  if (rssi >= -50) return '▂▄▆█';"
+        "  if (rssi >= -60) return '▂▄▆_';"
+        "  if (rssi >= -70) return '▂▄__';"
+        "  return '▂___';"
+        "}"
+        "function selectNet(ssid, rssi, enc) {"
+        "  selectedSsid = ssid;"
+        "  document.getElementById('ssid').value = ssid;"
+        "  document.getElementById('pass').focus();"
+        "  document.querySelectorAll('.network-item').forEach(function(el) { el.classList.remove('selected'); });"
+        "  event.currentTarget.classList.add('selected');"
+        "}"
+        "async function connect() {"
+        "  const btn = document.getElementById('connectBtn');"
+        "  const status = document.getElementById('status');"
+        "  const ssid = document.getElementById('ssid').value.trim();"
+        "  const pass = document.getElementById('pass').value;"
+        "  if (!ssid) {"
+        "    status.innerHTML = '<span class=\"error\">Please enter or select a network</span>';"
+        "    return;"
+        "  }"
+        "  btn.disabled = true;"
+        "  btn.textContent = 'Connecting...';"
+        "  status.innerHTML = '<span class=\"info\">Connecting to ' + ssid + '...</span>';"
+        "  try {"
+        "    const res = await fetch('/connect', {"
+        "      method: 'POST',"
+        "      headers: {'Content-Type': 'application/json'},"
+        "      body: JSON.stringify({ssid: ssid, pass: pass})"
+        "    });"
+        "    const result = await res.json();"
+        "    if (result.success) {"
+        "      status.innerHTML = '<span class=\"success\">Connected! Device will restart...</span>';"
+        "      setTimeout(function() { location.reload(); }, 3000);"
+        "    } else {"
+        "      status.innerHTML = '<span class=\"error\">Failed: ' + (result.error || 'Unknown error') + '</span>';"
+        "      btn.disabled = false;"
+        "      btn.textContent = 'Connect';"
+        "    }"
+        "  } catch (e) {"
+        "    status.innerHTML = '<span class=\"error\">Error: ' + e.message + '</span>';"
+        "    btn.disabled = false;"
+        "    btn.textContent = 'Connect';"
+        "  }"
+        "}"
+        "scan();"
+        "setInterval(scan, 10000);"
+        "</script>"
+        "</body>"
+        "</html>");
   });
-  _portal.on("/connect", HTTP_POST, [this]() {
-    const String ssid = _portal.arg("ssid");
-    const String password = _portal.arg("password");
-    if (ssid.isEmpty()) {
-      _portal.send(400, "text/plain", "Wi-Fi name is required.");
+
+  // Scan endpoint - returns JSON array of networks
+  _portal.on("/scan", HTTP_GET, [this]() {
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) {
+      _portal.send(200, "application/json", "[]");
       return;
     }
+    if (n == 0) {
+      WiFi.scanNetworks(true);  // Start async scan
+      _portal.send(200, "application/json", "[]");
+      return;
+    }
+    
+    String json = "[";
+    for (int i = 0; i < n; ++i) {
+      if (i > 0) json += ",";
+      String ssid = WiFi.SSID(i);
+      ssid.replace("\\", "\\\\");
+      ssid.replace("\"", "\\\"");
+      json += "{\"ssid\":\"" + ssid + "\",";
+      json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
+      json += "\"enc\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN) + "}";
+    }
+    json += "]";
+    WiFi.scanDelete();
+    WiFi.scanNetworks(true);  // Start next async scan
+    _portal.send(200, "application/json", json);
+  });
 
+  // Connect endpoint - accepts JSON, saves credentials and connects
+  _portal.on("/connect", HTTP_POST, [this]() {
+    if (!_portal.hasArg("plain")) {
+      _portal.send(400, "application/json", "{\"success\":false,\"error\":\"No data\"}");
+      return;
+    }
+    
+    String body = _portal.arg("plain");
+    String ssid, pass;
+    
+    // Simple JSON parse — use the same format as IntercomTransport
+    int ssidStart = body.indexOf("\"ssid\":\"");
+    if (ssidStart >= 0) {
+      ssidStart += 8;  // skip past "\"ssid\":\""
+      int ssidEnd = body.indexOf("\"", ssidStart);
+      ssid = body.substring(ssidStart, ssidEnd);
+    }
+    int passStart = body.indexOf("\"pass\":\"");
+    if (passStart >= 0) {
+      passStart += 8;  // skip past "\"pass\":\""
+      int passEnd = body.indexOf("\"", passStart);
+      pass = body.substring(passStart, passEnd);
+    }
+    
+    if (ssid.length() == 0) {
+      _portal.send(400, "application/json", "{\"success\":false,\"error\":\"Empty SSID\"}");
+      return;
+    }
+    
+    _portal.send(200, "application/json", "{\"success\":true}");
+    
+    // Save and connect after response sent
+    delay(500);
     Preferences preferences;
     if (!preferences.begin("intercom", false)) {
-      _portal.send(500, "text/plain", "Could not save Wi-Fi settings.");
+      Serial.println("[wifi] Could not save Wi-Fi settings");
       return;
     }
     const size_t ssidBytes = preferences.putString("wifi_ssid", ssid);
-    const size_t passwordBytes = preferences.putString("wifi_pass", password);
+    const size_t passBytes = preferences.putString("wifi_pass", pass);
     preferences.end();
-    if (ssidBytes == 0 || passwordBytes == 0) {
-      _portal.send(500, "text/plain", "Could not save Wi-Fi settings.");
+    
+    if (ssidBytes == 0 || passBytes == 0) {
+      Serial.println("[wifi] Could not save Wi-Fi settings");
       return;
     }
-
-    _portal.send(200, "text/plain",
-                 "Wi-Fi settings saved. The controller is restarting.");
-    delay(500);
-    ESP.restart();
+    
+    Serial.printf("[wifi] Connecting to %s\n", ssid.c_str());
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    
+    uint32_t start = millis();
+    while (millis() - start < 20000) {
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("[wifi] Connected to %s, IP: %s\n", ssid.c_str(), WiFi.localIP().toString().c_str());
+        delay(500);
+        ESP.restart();
+        return;
+      }
+      delay(100);
+    }
+    Serial.printf("[wifi] Connection to %s timed out\n", ssid.c_str());
+    // If connection fails, the portal stays active for retry
   });
+
+  // Captive portal redirects
   _portal.onNotFound([this, portalIp]() {
     _portal.sendHeader("Location", String("http://") + portalIp.toString() + "/");
     _portal.send(302, "text/plain", "");
@@ -403,6 +591,9 @@ void WifiOtaService::startConfigPortal() {
   _portalStarted = true;
   Serial.printf("[wifi] Setup AP %s; password: blehid123456; open http://%s/\n",
                 accessPointName, portalIp.toString().c_str());
+  
+  // Start initial async scan
+  WiFi.scanNetworks(true);
 }
 
 }  // namespace controller

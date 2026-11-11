@@ -602,6 +602,8 @@ class VoiceCommandRouter:
                 cwd=self.opencode_cwd or Path.cwd(),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 check=False,
             )
@@ -623,12 +625,16 @@ class VoiceCommandRouter:
                 cwd=self.opencode_cwd or Path.cwd(),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
         if result.returncode != 0:
+            return None
+        if not result.stdout:
             return None
         try:
             import json
@@ -657,6 +663,8 @@ class VoiceCommandRouter:
                 cwd=self.opencode_cwd or Path.cwd(),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 check=False,
             )
@@ -668,6 +676,8 @@ class VoiceCommandRouter:
                 f"OpenCode session listing failed with exit code "
                 f"{result.returncode}: {detail}"
             )
+        if not result.stdout:
+            raise RuntimeError("OpenCode returned an invalid session list")
         try:
             sessions = json.loads(result.stdout)
         except json.JSONDecodeError as error:
@@ -899,6 +909,8 @@ class VoiceCommandRouter:
                 cwd=self.opencode_cwd or Path.cwd(),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
                 check=False,
             )
@@ -906,6 +918,8 @@ class VoiceCommandRouter:
             print(f"Could not list OpenCode sessions: {error}", file=sys.stderr)
             return None
         if result.returncode != 0:
+            return None
+        if not result.stdout:
             return None
         try:
             sessions = json.loads(result.stdout)

@@ -12,7 +12,7 @@ void ControllerUi::renderImuCube(const ControllerViewState &state, const Palette
   constexpr float halfSize = 1.0f;
   constexpr float scale = 37.0f;
   constexpr float centerX = 67.5f;
-  constexpr float centerY = 126.0f;
+  constexpr float centerY = 132.0f;
   const float sinRoll = sinf(state.roll);
   const float cosRoll = cosf(state.roll);
   const float sinPitch = sinf(state.pitch);
@@ -41,7 +41,15 @@ void ControllerUi::renderImuCube(const ControllerViewState &state, const Palette
            state.roll * kRadToDeg, state.pitch * kRadToDeg);
   _screen.setTextColor(p.primary, p.background);
   _screen.drawString(orientation, _screen.width() / 2, 43);
-  _screen.drawRoundRect(8, 54, _screen.width() - 16, 146, 10, p.border);
+
+  char flips[24];
+  snprintf(flips, sizeof(flips), "X:%s  Y:%s",
+           state.flipX ? "FLIP" : "NORM",
+           state.flipY ? "FLIP" : "NORM");
+  _screen.setTextColor((state.flipX || state.flipY) ? p.accent : p.secondary,
+                       p.background);
+  _screen.drawString(flips, _screen.width() / 2, 53);
+  _screen.drawRoundRect(8, 64, _screen.width() - 16, 136, 10, p.border);
 
   int16_t points[8][2] = {};
   for (uint8_t i = 0; i < 8; ++i)
@@ -73,21 +81,12 @@ void ControllerUi::renderImuCube(const ControllerViewState &state, const Palette
     }
   }
 
-  // Draw the front face (z = -halfSize, indices 0, 1, 2, 3)
-  _screen.fillTriangle(points[0][0], points[0][1], points[1][0], points[1][1],
-                       points[2][0], points[2][1], p.secondary);
-  _screen.fillTriangle(points[0][0], points[0][1], points[2][0], points[2][1],
-                       points[3][0], points[3][1], p.secondary);
-
-  // Draw the back face (z = +halfSize, indices 4, 5, 6, 7)
-  _screen.fillTriangle(points[4][0], points[4][1], points[5][0], points[5][1],
-                       points[6][0], points[6][1], p.primary);
-  _screen.fillTriangle(points[4][0], points[4][1], points[6][0], points[6][1],
-                       points[7][0], points[7][1], p.primary);
-
   _screen.setTextDatum(lgfx::textdatum_t::top_center);
+  _screen.setTextColor(p.primary, p.background);
+  _screen.drawString("Stick L/R: rotate base", _screen.width() / 2, 204);
   _screen.setTextColor(p.secondary, p.background);
-  _screen.drawString("Front/Enter: accept | Back/Esc: cancel", _screen.width() / 2, 224);
+  _screen.drawString("Click stick: save", _screen.width() / 2, 216);
+  _screen.drawString("A: flip X  B: flip Y", _screen.width() / 2, 228);
   _screen.pushSprite(0, 0);
 }
 

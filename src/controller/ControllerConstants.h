@@ -9,9 +9,31 @@ namespace
 constexpr uint8_t kJoystickAddress = 0x63;
 constexpr uint8_t kJoystickOffsetRegister = 0x50;
 constexpr uint8_t kJoystickButtonRegister = 0x20;
-constexpr uint32_t kI2cFrequency = 400000;
+constexpr uint32_t kI2cFrequency = 100000;
 constexpr uint8_t kJoystickProbeAttempts = 12;
 constexpr uint32_t kJoystickProbeDelayMs = 100;
+// The Joystick2's STM32G030 firmware
+// (m5stack/M5Unit-Joystick2-Internal-FW) arms a "stop timeout" latch on every
+// write address match and only clears it in its STOP interrupt. A missed STOP
+// makes it de-init and re-init its I2C peripheral every ~510 ms, NACKing
+// inside each re-init window, and it never clears the controller error flags.
+// Register reads are therefore split into two STOP-terminated transfers so the
+// latch is never left armed across the read phase. If the unit still wedges,
+// recovery escalates from a bus free, to the firmware's reboot register, to a
+// real Grove 5V power cycle.
+constexpr uint8_t kJoystickRecoveryThreshold = 5;
+constexpr uint32_t kJoystickRecoveryIntervalMs = 2000;
+constexpr uint32_t kJoystickRecoveryMaxBackoffMs = 30000;
+constexpr uint32_t kJoystickInterPhaseDelayUs = 250;
+constexpr uint8_t kJoystickRebootRegister = 0xFD;
+constexpr uint8_t kJoystickRebootValue = 0x01;
+constexpr uint8_t kJoystickFirmwareVersionRegister = 0xFE;
+constexpr uint8_t kJoystickAddressRegister = 0xFF;
+constexpr uint32_t kJoystickRebootSettleMs = 800;
+constexpr uint32_t kJoystickAddressRestoreMs = 400;
+constexpr uint32_t kJoystickPowerCycleOffMs = 500;
+constexpr uint32_t kJoystickPowerCycleSettleMs = 700;
+constexpr uint8_t kJoystickRecoveryProbeAttempts = 12;
 constexpr uint32_t kInputIntervalMs = 20;
 #ifndef INTERCOM_IDLE_SLEEP_MS
 #define INTERCOM_IDLE_SLEEP_MS 60000
