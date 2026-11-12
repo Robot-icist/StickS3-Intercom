@@ -42,7 +42,6 @@ namespace controller
     drawClippedMarquee(_screen, "A/B: zoom | motion: Air Mouse", 8, 232,
                        _screen.width() - 16, 12, p.secondary,
                        p.background, now);
-    _screen.pushSprite(0, 0);
     return;
   
   }

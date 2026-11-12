@@ -22,12 +22,12 @@ void setup() {
   M5.begin(config);
   M5.Speaker.end();
 
-  //Fix for StickS3: The Grove rail is not powered on by default, so the Joystick2 unit cannot be detected. Enable the rail and configure the button pins as
-  M5.Power.setExtOutput(true);
-  pinMode(9, INPUT_PULLUP);
-  pinMode(10, INPUT_PULLUP);
-  pinMode(11, INPUT_PULLUP);
-  pinMode(12, INPUT_PULLUP);
+  // //Fix for StickS3: The Grove rail is not powered on by default, so the Joystick2 unit cannot be detected. Enable the rail and configure the button pins as
+  // M5.Power.setExtOutput(true);
+  // pinMode(9, INPUT_PULLUP);
+  // pinMode(10, INPUT_PULLUP);
+  // pinMode(11, INPUT_PULLUP);
+  // pinMode(12, INPUT_PULLUP);
   
   if (!app.begin()) {
     Serial.println("[controller] init failed, halting");

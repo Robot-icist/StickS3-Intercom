@@ -163,6 +163,7 @@ namespace controller
     uint8_t _dpiLevel = 3;
     uint8_t _motionLevel = 3;
     int8_t _batteryLevel = -1;
+    bool _batteryCharging = false;
     uint8_t _baseRotation = 0;
     uint8_t _pendingBaseRotation = 0;
     float _roll = 0.0f;

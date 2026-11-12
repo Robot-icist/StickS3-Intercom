@@ -43,7 +43,6 @@ namespace controller
     drawClippedMarquee(_screen, "Hold stick: select mode", 8, 226,
                        _screen.width() - 16, 12, p.secondary,
                        p.background, now);
-    _screen.pushSprite(0, 0);
     return;
   
   }

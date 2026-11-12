@@ -46,7 +46,6 @@ namespace controller
                          _screen.width() - 16, 12, p.error,
                          p.background, now);
     }
-    _screen.pushSprite(0, 0);
     return;
   
   }

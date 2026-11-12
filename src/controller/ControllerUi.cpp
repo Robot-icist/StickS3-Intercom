@@ -36,42 +36,95 @@ const Palette &getPalette(uint8_t paletteIndex)
   return kPalettes[paletteIndex];
 }
 
-void drawBatteryStatus(LGFX_Sprite &screen, int8_t level, int32_t y, const Palette &p)
+namespace
+{
+void drawChargingBolt(LGFX_Sprite &screen, int32_t x, int32_t y, uint16_t color)
+{
+  screen.fillTriangle(x + 4, y, x, y + 5, x + 3, y + 5, color);
+  screen.fillTriangle(x + 1, y + 9, x + 6, y + 4, x + 3, y + 4, color);
+}
+
+void drawUsbPlug(LGFX_Sprite &screen, int32_t x, int32_t y, uint16_t color)
+{
+  // Compact plug: two prongs, a rounded body, and a short lead.
+  screen.drawRoundRect(x + 2, y + 3, 8, 6, 2, color);
+  screen.drawFastVLine(x + 4, y, 3, color);
+  screen.drawFastVLine(x + 8, y, 3, color);
+  screen.drawFastHLine(x + 10, y + 5, 2, color);
+}
+
+void drawBatteryGauge(LGFX_Sprite &screen, int32_t x, int32_t y, int8_t level,
+                      uint16_t outline, uint16_t fillColor)
+{
+  constexpr int32_t kWidth = 20;
+  constexpr int32_t kHeight = 10;
+  screen.drawRect(x, y, kWidth, kHeight, outline);
+  screen.fillRect(x + kWidth, y + 3, 2, kHeight - 6, outline);
+
+  constexpr int32_t kInnerWidth = kWidth - 4;
+  int32_t fill = kInnerWidth * static_cast<int32_t>(level) / 100;
+  if (fill < 0)
+  {
+    fill = 0;
+  }
+  if (fill > kInnerWidth)
+  {
+    fill = kInnerWidth;
+  }
+  if (fill > 0)
+  {
+    screen.fillRect(x + 2, y + 2, fill, kHeight - 4, fillColor);
+  }
+}
+} // namespace
+
+void drawBatteryStatus(LGFX_Sprite &screen, int8_t level, bool charging,
+                       int32_t y, const Palette &p)
 {
   const int32_t right = screen.width() - 8;
+  const bool hasLevel = level >= 0;
+  const uint16_t color = !hasLevel
+                             ? p.secondary
+                             : (level <= 20 && !charging) ? p.error : p.primary;
+
   char text[8];
-  uint16_t color = p.primary;
-  if (level < 0)
+  if (hasLevel)
   {
-    snprintf(text, sizeof(text), "USB");
-    color = p.secondary;
+    snprintf(text, sizeof(text), "%d%%", static_cast<int>(level));
   }
   else
   {
-    snprintf(text, sizeof(text), "%d%%", static_cast<int>(level));
-    color = level <= 20 ? p.error : p.primary;
+    snprintf(text, sizeof(text), "USB");
   }
 
   screen.setFont(&fonts::Font0);
   screen.setTextDatum(lgfx::textdatum_t::top_right);
   screen.setTextColor(color, p.background);
-  if (level < 0)
-  {
-    screen.drawString(text, right, y);
-    return;
-  }
 
-  // Small battery outline with a proportional fill, followed by the level.
-  constexpr int32_t kIconWidth = 17;
-  constexpr int32_t kIconHeight = 9;
-  const int32_t iconX = right - kIconWidth - 2;
-  screen.drawString(text, iconX - 3, y);
-  screen.drawRect(iconX, y, kIconWidth, kIconHeight, color);
-  screen.fillRect(iconX + kIconWidth, y + 2, 2, kIconHeight - 4, color);
-  const int32_t fill = (kIconWidth - 4) * level / 100;
-  if (fill > 0)
+  if (hasLevel)
   {
-    screen.fillRect(iconX + 2, y + 2, fill, kIconHeight - 4, color);
+    constexpr int32_t kIconWidth = 20;
+    const int32_t iconX = right - kIconWidth - 2;
+    const int32_t textRight = iconX - (charging ? 12 : 3);
+    screen.drawString(text, textRight, y);
+    if (charging)
+    {
+      drawChargingBolt(screen, iconX - 9, y + 1, p.accent);
+    }
+    drawBatteryGauge(screen, iconX, y, level, color,
+                     charging ? p.connected : color);
+  }
+  else
+  {
+    constexpr int32_t kIconWidth = 12;
+    const int32_t iconX = right - kIconWidth - 2;
+    const int32_t textRight = iconX - (charging ? 12 : 3);
+    screen.drawString(text, textRight, y);
+    if (charging)
+    {
+      drawChargingBolt(screen, iconX - 9, y + 1, p.accent);
+    }
+    drawUsbPlug(screen, iconX, y, charging ? p.connected : p.secondary);
   }
 }
 
@@ -182,6 +235,10 @@ void ControllerUi::render(const ControllerViewState &state, uint32_t now)
   {
     renderController(state, now, p);
   }
+
+  // Shared chrome for every mode: draw the battery once and present the frame.
+  drawBatteryStatus(_screen, state.batteryLevel, state.batteryCharging, 2, p);
+  _screen.pushSprite(0, 0);
 
   if (state.otaInProgress)
   {
@@ -301,7 +358,6 @@ void ControllerUi::renderModePicker(const ControllerViewState &state,
   drawClippedMarquee(_screen, "Front/Enter: accept | Back/Esc: cancel", 8, 223,
                      _screen.width() - 16, 12, p.secondary,
                      p.background, now);
-  _screen.pushSprite(0, 0);
 }
 
 void ControllerUi::renderController(const ControllerViewState &state,
@@ -331,7 +387,6 @@ void ControllerUi::renderController(const ControllerViewState &state,
                                                  : "HID WAIT";
   _screen.drawString(connectionStatus,
                      _screen.width() - 8, 12);
-  drawBatteryStatus(_screen, state.batteryLevel, 2, p);
   drawNetworkIdentity(_screen, state, now, p);
   _screen.drawFastHLine(8, 34, _screen.width() - 16, p.border);
 

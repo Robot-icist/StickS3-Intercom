@@ -59,7 +59,6 @@ namespace controller
     drawClippedMarquee(_screen, "Requires BLE audio companion", 8, 217,
                        _screen.width() - 16, 12, p.secondary,
                        p.background, now);
-    _screen.pushSprite(0, 0);
     return;
   
   }

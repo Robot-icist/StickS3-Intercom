@@ -58,6 +58,7 @@ namespace controller
     uint8_t colorPalette = 0;
     uint8_t selectedPaletteIndex = 0;
     int8_t batteryLevel = -1;
+    bool batteryCharging = false;
     bool joystickError = false;
     bool otaInProgress = false;
     uint8_t otaProgress = 0;
@@ -73,7 +74,8 @@ namespace controller
     uint32_t lastValidInputAt = 0;
   };
 
-  void drawBatteryStatus(LGFX_Sprite &screen, int8_t level, int32_t y, const Palette &p);
+  void drawBatteryStatus(LGFX_Sprite &screen, int8_t level, bool charging,
+                         int32_t y, const Palette &p);
   void drawClippedMarquee(LGFX_Sprite &screen, const char *text, int32_t x, int32_t y,
                           int32_t width, int32_t height, uint16_t foreground,
                           uint16_t background, uint32_t now);

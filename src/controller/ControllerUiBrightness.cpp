@@ -23,7 +23,6 @@ namespace controller
     drawClippedMarquee(_screen, "Stick L/R: adjust", 8, 165, _screen.width() - 16, 12, p.primary, p.background, now);
     drawClippedMarquee(_screen, "BtnA: high  BtnB: eco", 8, 181, _screen.width() - 16, 12, p.primary, p.background, now);
     drawClippedMarquee(_screen, "Click: save | hold stick: select mode", 8, 199, _screen.width() - 16, 12, p.secondary, p.background, now);
-    _screen.pushSprite(0, 0);
     return;
   
   }

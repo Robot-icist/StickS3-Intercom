@@ -240,6 +240,14 @@ namespace controller
 
   void ControllerFeatures::readBatteryLevel()
   {
+    const auto chargingState = M5.Power.isCharging();
+    const bool charging = chargingState == m5::Power_Class::is_charging;
+    if (charging != _batteryCharging)
+    {
+      Serial.printf("[controller] battery %s\n", charging ? "charging" : "discharging");
+      _batteryCharging = charging;
+    }
+
     // M5Unified knows the StickS3's M5PM1 PMIC and reports 0..100, or a negative
     // value when the battery is not readable (for example on USB with no cell).
     const int32_t level = M5.Power.getBatteryLevel();
@@ -296,6 +304,7 @@ namespace controller
     state.colorPalette = static_cast<uint8_t>(_colorPalette);
     state.selectedPaletteIndex = _selectedPaletteIndex;
     state.batteryLevel = _batteryLevel;
+    state.batteryCharging = _batteryCharging;
     state.joystickError = _joystickError;
     state.pendingBaseRotation = _pendingBaseRotation;
     state.roll = _roll;

@@ -8,6 +8,7 @@
 #include <esp_system.h>
 
 #include <cstring>
+#include <cmath>
 
 namespace controller {
 namespace {
@@ -17,6 +18,62 @@ constexpr uint32_t kWifiConnectTimeoutMs = 20000;
 static uint8_t s_otaPercent = 255;
 static int s_otaBarFill = 0;
 static char s_lastOtaStatus[32] = "";
+static uint32_t s_lastSpinnerAt = 0;
+
+void drawOtaArc(float startDegrees, float sweepDegrees, uint16_t color) {
+  auto &d = M5.Display;
+  const int cx = d.width() / 2;
+  const int cy = d.height() / 2 - 70;
+  constexpr int kInnerRadius = 6;
+  constexpr int kOuterRadius = 9;
+  float start = fmodf(startDegrees, 360.0f);
+  if (start < 0.0f) {
+    start += 360.0f;
+  }
+  const float end = start + sweepDegrees;
+  if (end <= 360.0f) {
+    d.drawArc(cx, cy, kInnerRadius, kOuterRadius, start, end, color);
+  } else {
+    d.drawArc(cx, cy, kInnerRadius, kOuterRadius, start, 360.0f, color);
+    d.drawArc(cx, cy, kInnerRadius, kOuterRadius, 0.0f, end - 360.0f, color);
+  }
+}
+
+// Smooth clockwise arc spinner. It is drawn last so it stays on top of the
+// OTA screen, even while the progress bar and status text are refreshed.
+void drawOtaSpinner(uint32_t now) {
+  auto &d = M5.Display;
+  const int cx = d.width() / 2;
+  const int cy = d.height() / 2 - 70;
+
+  // Erase the previous frame, then draw the track and the bright leading arc.
+  d.fillRect(cx - 12, cy - 12, 25, 25, 0x0000);
+  drawOtaArc(0.0f, 360.0f, 0x18E3);
+
+  const float head = fmodf(static_cast<float>(now) * 0.22f, 360.0f);
+  drawOtaArc(head - 110.0f, 110.0f, 0x07E0);
+  drawOtaArc(head - 22.0f, 22.0f, 0xFFFF);
+
+  const float headRadians = head * 0.0174533f;
+  d.fillCircle(cx + static_cast<int>(lroundf(cosf(headRadians) * 7.5f)),
+               cy + static_cast<int>(lroundf(sinf(headRadians) * 7.5f)), 1,
+               0xFFFF);
+}
+
+// Draws a warning triangle so its bottom edge sits at `bottomY`, directly above
+// the "DO NOT POWER OFF" message.
+void drawOtaWarningSign(int cx, int bottomY) {
+  auto &d = M5.Display;
+  constexpr int kHalfWidth = 9;
+  constexpr int kHeight = 14;
+  const int topY = bottomY - kHeight;
+
+  d.fillTriangle(cx, topY, cx - kHalfWidth, bottomY, cx + kHalfWidth, bottomY,
+                 0xFFE0);
+  // Rounded stem plus a dot forms a clean exclamation mark.
+  d.fillRoundRect(cx - 1, topY + 4, 2, 6, 1, 0x0000);
+  d.fillRect(cx - 1, topY + 11, 2, 2, 0x0000);
+}
 
 void beginOtaProgressScreen(const char *status) {
   auto &d = M5.Display;
@@ -34,16 +91,20 @@ void beginOtaProgressScreen(const char *status) {
   const int by = h / 2 - 6;
   const int bw = w - 32;
   const int bh = 12;
+  const int warningTextY = by + 44;
   d.drawRect(bx, by, bw, bh, 0xFFFF);
   d.setTextColor(0xFFE0, 0x0000);
-  d.drawString("DO NOT POWER OFF", w / 2, by + 34);
+  d.drawString("DO NOT POWER OFF", w / 2, warningTextY);
   char percentText[16];
   snprintf(percentText, sizeof(percentText), "0%%");
   d.setTextColor(0xFFFF, 0x0000);
   d.drawString(percentText, w / 2, by + 16);
+  drawOtaWarningSign(w / 2, warningTextY - 4);
+  s_lastSpinnerAt = millis();
+  drawOtaSpinner(s_lastSpinnerAt);
+  M5.Display.waitDisplay();
   s_otaPercent = 0;
   s_otaBarFill = 0;
-  M5.Display.waitDisplay();
   strncpy(s_lastOtaStatus, status, sizeof(s_lastOtaStatus) - 1);
   s_lastOtaStatus[sizeof(s_lastOtaStatus) - 1] = '\0';
 }
@@ -66,9 +127,6 @@ void updateOtaStatusText(const char *status) {
 }
 
 void updateOtaProgressBar(uint8_t percent) {
-  if (percent == s_otaPercent) {
-    return;
-  }
   auto &d = M5.Display;
   const int w = d.width();
   const int h = d.height();
@@ -76,23 +134,36 @@ void updateOtaProgressBar(uint8_t percent) {
   const int by = h / 2 - 6;
   const int bw = w - 32;
   const int bh = 12;
-  const int interiorWidth = bw - 2;
-  const int newFill = interiorWidth * static_cast<int>(percent) / 100;
-  if (newFill > s_otaBarFill) {
-    d.fillRect(bx + 1 + s_otaBarFill, by + 1, newFill - s_otaBarFill,
-               bh - 2, 0x07E0);
+  bool dirty = false;
+  if (percent != s_otaPercent) {
+    const int interiorWidth = bw - 2;
+    const int newFill = interiorWidth * static_cast<int>(percent) / 100;
+    if (newFill > s_otaBarFill) {
+      d.fillRect(bx + 1 + s_otaBarFill, by + 1, newFill - s_otaBarFill,
+                 bh - 2, 0x07E0);
+    }
+    d.setTextDatum(lgfx::textdatum_t::top_center);
+    d.setFont(&fonts::Font0);
+    d.fillRect(w / 2 - 24, by + 16, 48, 12, 0x0000);
+    d.setTextColor(0xFFFF, 0x0000);
+    char percentText[16];
+    snprintf(percentText, sizeof(percentText), "%u%%",
+             static_cast<unsigned>(percent));
+    d.drawString(percentText, w / 2, by + 16);
+    s_otaPercent = percent;
+    s_otaBarFill = newFill;
+    dirty = true;
   }
-  d.setTextDatum(lgfx::textdatum_t::top_center);
-  d.setFont(&fonts::Font0);
-  d.fillRect(w / 2 - 24, by + 16, 48, 12, 0x0000);
-  d.setTextColor(0xFFFF, 0x0000);
-  char percentText[16];
-  snprintf(percentText, sizeof(percentText), "%u%%",
-           static_cast<unsigned>(percent));
-  d.drawString(percentText, w / 2, by + 16);
-  s_otaPercent = percent;
-  s_otaBarFill = newFill;
-  M5.Display.waitDisplay();
+  // Advance the loader even when the percentage did not change.
+  const uint32_t now = millis();
+  if (now - s_lastSpinnerAt >= 60) {
+    s_lastSpinnerAt = now;
+    drawOtaSpinner(now);
+    dirty = true;
+  }
+  if (dirty) {
+    M5.Display.waitDisplay();
+  }
 }
 
 }  // namespace
@@ -582,11 +653,171 @@ void WifiOtaService::startConfigPortal() {
     // If connection fails, the portal stays active for retry
   });
 
-  // Captive portal redirects
-  _portal.onNotFound([this, portalIp]() {
-    _portal.sendHeader("Location", String("http://") + portalIp.toString() + "/");
-    _portal.send(302, "text/plain", "");
-  });
+  // Captive portal detection endpoints - handle common OS checks
+  // Each OS expects specific responses to confirm "internet access" (captive portal)
+  // IMPORTANT: Serve portal HTML directly (not redirect) to keep devices connected
+  
+  // Helper to serve the main portal page directly
+  auto servePortalPage = [this]() {
+    _portal.send(
+        200, "text/html",
+        "<!doctype html>"
+        "<html>"
+        "<head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>StickS3 Wi-Fi Setup</title>"
+        "<style>"
+        "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 400px; margin: 2rem auto; padding: 1rem; background: #fafafa; }"
+        "h1 { color: #333; font-size: 1.5rem; margin-bottom: 0.5rem; }"
+        ".subtitle { color: #666; margin-bottom: 1.5rem; font-size: 0.9rem; }"
+        ".form-group { margin-bottom: 1rem; background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }"
+        "label { display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem; color: #333; }"
+        "input { width: 100%; padding: 0.75rem; font-size: 1rem; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; }"
+        "input:focus { outline: none; border-color: #007bff; box-shadow: 0 0 0 2px rgba(0,123,255,0.2); }"
+        "button { width: 100%; padding: 1rem; font-size: 1.1rem; font-weight: 600; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }"
+        "button:disabled { background: #ccc; cursor: not-allowed; }"
+        "button:hover:not(:disabled) { background: #0056b3; }"
+        ".networks { max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background: white; }"
+        ".network-item { padding: 0.75rem 1rem; cursor: pointer; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }"
+        ".network-item:last-child { border-bottom: none; }"
+        ".network-item:hover { background: #f5f5f5; }"
+        ".network-item.selected { background: #e7f1ff; }"
+        ".network-info { display: flex; flex-direction: column; }"
+        ".network-ssid { font-weight: 500; color: #333; }"
+        ".network-meta { font-size: 0.75rem; color: #666; margin-top: 0.25rem; }"
+        ".signal { font-size: 0.75rem; color: #666; white-space: nowrap; margin-left: 0.5rem; }"
+        ".lock { color: #007bff; }"
+        ".unlock { color: #28a745; }"
+        "#status { margin-top: 1rem; text-align: center; font-size: 0.9rem; min-height: 1.2em; }"
+        ".success { color: #28a745; }"
+        ".error { color: #dc3545; }"
+        ".info { color: #007bff; }"
+        "</style>"
+        "</head>"
+        "<body>"
+        "<h1>StickS3 Wi-Fi Setup</h1>"
+        "<p class='subtitle'>Select or enter WiFi network:</p>"
+        "<div class='form-group'>"
+        "<label>Available Networks</label>"
+        "<div class='networks' id='networks'>Scanning...</div>"
+        "</div>"
+        "<div class='form-group'>"
+        "<label>SSID</label>"
+        "<input type='text' id='ssid' placeholder='Network name' autocomplete='off'>"
+        "</div>"
+        "<div class='form-group'>"
+        "<label>Password</label>"
+        "<input type='password' id='pass' placeholder='Password (leave empty for open)' autocomplete='off'>"
+        "</div>"
+        "<button id='connectBtn' onclick='connect()'>Connect</button>"
+        "<p id='status'></p>"
+
+        "<script>"
+        "let selectedSsid = '';"
+        "async function scan() {"
+        "  const res = await fetch('/scan');"
+        "  const nets = await res.json();"
+        "  const div = document.getElementById('networks');"
+        "  if (nets.length === 0) {"
+        "    div.innerHTML = '<div class=\"network-item\" style=\"color:#999;text-align:center\">No networks found</div>';"
+        "    return;"
+        "  }"
+        "  div.innerHTML = nets.map(function(n) {"
+        "    var ssidEscaped = n.ssid.replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");"
+        "    return '<div class=\"network-item\" onclick=\"selectNet(\\'' + ssidEscaped + '\\', ' + n.rssi + ', ' + n.enc + ')\">'"
+        "  + '<div class=\"network-info\">'"
+        "  + '<span class=\"network-ssid\">' + n.ssid + '</span>'"
+        "  + '<span class=\"network-meta\">' + n.rssi + ' dBm ' + (n.enc ? '<span class=\"lock\">&#128274;</span>' : '<span class=\"unlock\">&#128275;</span>') + '</span>'"
+        "  + '</div>'"
+        "  + '<span class=\"signal\">' + signalBars(n.rssi) + '</span>'"
+        "  + '</div>';"
+        "  }).join('');"
+        "}"
+        "function signalBars(rssi) {"
+        "  if (rssi >= -50) return '▂▄▆█';"
+        "  if (rssi >= -60) return '▂▄▆_';"
+        "  if (rssi >= -70) return '▂▄__';"
+        "  return '▂___';"
+        "}"
+        "function selectNet(ssid, rssi, enc) {"
+        "  selectedSsid = ssid;"
+        "  document.getElementById('ssid').value = ssid;"
+        "  document.getElementById('pass').focus();"
+        "  document.querySelectorAll('.network-item').forEach(function(el) { el.classList.remove('selected'); });"
+        "  event.currentTarget.classList.add('selected');"
+        "}"
+        "async function connect() {"
+        "  const btn = document.getElementById('connectBtn');"
+        "  const status = document.getElementById('status');"
+        "  const ssid = document.getElementById('ssid').value.trim();"
+        "  const pass = document.getElementById('pass').value;"
+        "  if (!ssid) {"
+        "    status.innerHTML = '<span class=\"error\">Please enter or select a network</span>';"
+        "    return;"
+        "  }"
+        "  btn.disabled = true;"
+        "  btn.textContent = 'Connecting...';"
+        "  status.innerHTML = '<span class=\"info\">Connecting to ' + ssid + '...</span>';"
+        "  try {"
+        "    const res = await fetch('/connect', {"
+        "      method: 'POST',"
+        "      headers: {'Content-Type': 'application/json'},"
+        "      body: JSON.stringify({ssid: ssid, pass: pass})"
+        "    });"
+        "    const result = await res.json();"
+        "    if (result.success) {"
+        "      status.innerHTML = '<span class=\"success\">Connected! Device will restart...</span>';"
+        "      setTimeout(function() { location.reload(); }, 3000);"
+        "    } else {"
+        "      status.innerHTML = '<span class=\"error\">Failed: ' + (result.error || 'Unknown error') + '</span>';"
+        "      btn.disabled = false;"
+        "      btn.textContent = 'Connect';"
+        "    }"
+        "  } catch (e) {"
+        "    status.innerHTML = '<span class=\"error\">Error: ' + e.message + '</span>';"
+        "    btn.disabled = false;"
+        "    btn.textContent = 'Connect';"
+        "  }"
+        "}"
+        "scan();"
+        "setInterval(scan, 10000);"
+        "</script>"
+        "</body>"
+        "</html>");
+  };
+
+  // Android: expects 204 No Content with empty body - but serve portal to keep connected
+  _portal.on("/generate_204", HTTP_GET, servePortalPage);
+  _portal.on("/gen_204", HTTP_GET, servePortalPage);
+
+  // Windows NCSI: expects "Microsoft NCSI" - but serve portal to keep connected
+  _portal.on("/connecttest.txt", HTTP_GET, servePortalPage);
+  _portal.on("/ncsi.txt", HTTP_GET, servePortalPage);
+  _portal.on("/redirect", HTTP_GET, servePortalPage);
+
+  // Firefox: expects "success" - but serve portal to keep connected
+  _portal.on("/success.txt", HTTP_GET, servePortalPage);
+
+  // iOS/macOS: expects HTML page with specific content - serve portal directly
+  _portal.on("/hotspot-detect.html", HTTP_GET, servePortalPage);
+
+  // iOS captive.apple.com
+  _portal.on("/hotspot-detect.html", HTTP_GET, servePortalPage);
+  _portal.on("/library/test/success.html", HTTP_GET, servePortalPage);
+
+  // Kindle/other: generic check - serve portal
+  _portal.on("/kindle-wifi/wifistub.html", HTTP_GET, servePortalPage);
+
+  // Additional common captive portal check URLs
+  _portal.on("/captive-portal", HTTP_GET, servePortalPage);
+  _portal.on("/captive-portal/", HTTP_GET, servePortalPage);
+  _portal.on("/generate_204", HTTP_GET, servePortalPage);
+  _portal.on("/gen_204", HTTP_GET, servePortalPage);
+
+  // Catch-all: serve portal page directly for ANY unknown request
+  // This ensures devices stay on the AP even if DNS doesn't catch their request
+  _portal.onNotFound(servePortalPage);
   _portal.begin();
   _portalStarted = true;
   Serial.printf("[wifi] Setup AP %s; password: blehid123456; open http://%s/\n",

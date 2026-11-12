@@ -25,7 +25,6 @@ void ControllerUi::renderImuCube(const ControllerViewState &state, const Palette
   _screen.setTextDatum(lgfx::textdatum_t::top_left);
   _screen.setFont(&fonts::Font0);
   _screen.drawString("ORIENTATION", 8, 8);
-  drawBatteryStatus(_screen, state.batteryLevel, 8, p);
   drawNetworkIdentity(_screen, state, millis(), p);
   char baseOrientation[32];
   snprintf(baseOrientation, sizeof(baseOrientation), "BASE %u DEG %s",
@@ -87,7 +86,6 @@ void ControllerUi::renderImuCube(const ControllerViewState &state, const Palette
   _screen.setTextColor(p.secondary, p.background);
   _screen.drawString("Click stick: save", _screen.width() / 2, 216);
   _screen.drawString("A: flip X  B: flip Y", _screen.width() / 2, 228);
-  _screen.pushSprite(0, 0);
 }
 
 }
