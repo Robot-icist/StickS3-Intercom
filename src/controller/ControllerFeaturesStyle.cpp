@@ -26,18 +26,19 @@ namespace controller
         styleHoldHandled = false;
       }
 
-      if (std::abs(sx) >= kJoystickOrientationThreshold)
+      // Use Y axis (up/down) for palette selection since palettes are listed vertically
+      if (std::abs(sy) >= kJoystickOrientationThreshold)
       {
         if (_styleSaved)
         {
-          if (sx < 0)
+          if (sy < 0) // Up - previous palette
           {
             if (_selectedPaletteIndex == 0)
               _selectedPaletteIndex = static_cast<uint8_t>(kPaletteCount) - 1;
             else
               --_selectedPaletteIndex;
           }
-          else
+          else // Down - next palette
           {
             _selectedPaletteIndex = (_selectedPaletteIndex + 1) % static_cast<uint8_t>(kPaletteCount);
           }

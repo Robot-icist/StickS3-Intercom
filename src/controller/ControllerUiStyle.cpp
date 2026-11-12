@@ -7,16 +7,15 @@ namespace controller
 {
   void ControllerUi::renderStyleMode(const ControllerViewState &state, uint32_t now, const Palette &p)
   {
-    _screen.fillRoundRect(6, 48, _screen.width() - 12, 120, 7, p.panel);
+    _screen.fillRoundRect(6, 48, _screen.width() - 12, 146, 7, p.panel);
     _screen.setTextDatum(lgfx::textdatum_t::top_center);
     _screen.setFont(&fonts::Font0);
     _screen.setTextColor(p.accent, p.panel);
     _screen.drawString("STYLE - COLOR PALETTE", _screen.width() / 2, 60);
 
     static const char *const paletteNames[] = {
-        "Default", "Dark", "Light", "High Contrast",
-        "Cyberpunk", "Monochrome", "Sepia", "Forest"};
-    constexpr uint8_t kPaletteCount = 8;
+        "Default", "Dark", "Light","Cyberpunk", "Monochrome", "Sepia", "Forest"};
+    constexpr uint8_t kPaletteCount = 7;
 
     _screen.setFont(&fonts::Font0);
     for (uint8_t i = 0; i < kPaletteCount; ++i)
@@ -34,7 +33,7 @@ namespace controller
     }
 
     _screen.setTextColor(p.primary, p.background);
-    drawClippedMarquee(_screen, "Stick L/R: cycle palettes", 8, 190,
+    drawClippedMarquee(_screen, "Stick U/D: cycle palettes", 8, 190,
                        _screen.width() - 16, 12, p.primary,
                        p.background, now);
     drawClippedMarquee(_screen, "Click: save palette", 8, 208,

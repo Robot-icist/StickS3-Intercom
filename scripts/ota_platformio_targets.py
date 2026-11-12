@@ -147,12 +147,18 @@ def _deploy_action(component=None, environment=None, restart_companion=False):
             f"{task_description}...",
             flush=True,
         )
-        result = subprocess.call(command, cwd=str(ROOT))
-        if result:
-            print(f"[OTA] Deployment failed with exit code {result}.", flush=True)
+        # Run detached so PlatformIO task finishes without waiting for OTA + companion restart
+        if os.name == "nt":
+            proc = subprocess.Popen(
+                command,
+                cwd=str(ROOT),
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
         else:
-            print("[OTA] Deployment task finished successfully.", flush=True)
-        return result
+            proc = subprocess.Popen(command, cwd=str(ROOT), start_new_session=True)
+        # Don't wait - the OTA deployer handles its own completion and companion restart
+        print("[OTA] Deployer launched in background; PlatformIO task exiting.", flush=True)
+        return 0
 
     return run
 
@@ -199,14 +205,34 @@ def _companion_run_action(source, target, env):
             "Run the companion_build_windows task first."
         )
     print(f"[Companion] Starting {executable}...", flush=True)
-    return subprocess.call([str(executable)], cwd=str(ROOT))
+    if os.name == "nt":
+        # Detach on Windows so PlatformIO task finishes without waiting
+        subprocess.Popen(
+            [str(executable)],
+            cwd=str(ROOT),
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:
+        # On Unix, use start_new_session to detach
+        subprocess.Popen([str(executable)], cwd=str(ROOT), start_new_session=True)
+    return 0
 
 
 def _companion_source_action(source, target, env):
     _kill_companion_processes()
     command = [str(_companion_python()), "-u", "companion/launcher.py"]
     print("[Companion] Starting the desktop app from source...", flush=True)
-    return subprocess.call(command, cwd=str(ROOT))
+    if os.name == "nt":
+        # Detach on Windows so PlatformIO task finishes without waiting
+        subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:
+        # On Unix, use start_new_session to detach
+        subprocess.Popen(command, cwd=str(ROOT), start_new_session=True)
+    return 0
 
 
 Import("env")
