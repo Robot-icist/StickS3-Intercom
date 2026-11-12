@@ -131,6 +131,7 @@ namespace controller
           "[controller] Joystick2 not detected yet; continuing and retrying");
       _joystickError = true;
     }
+    _lastJoystickRgbAt = millis();
 
     Preferences preferences;
     // Writable open also creates the namespace on a fresh device.
@@ -150,6 +151,9 @@ namespace controller
     const uint8_t savedMotionFlipY = preferences.getUChar("mflipY", 0);
     const uint32_t savedSleepMs = preferences.getUInt("sleepMs", kDefaultIdleSleepMs);
     const uint8_t savedBrightness = preferences.getUChar("brightness", 180);
+    const uint8_t savedLedBrightness = preferences.getUChar("ledBright", 64);
+    const uint8_t savedLedColor = preferences.getUChar("ledColor", 0);
+    const uint8_t savedLedCycle = preferences.getUChar("ledCycle", 1);
     preferences.end();
     if (savedRotation > 3 || savedMode >= kModeCount || savedFlipX > 1 ||
         savedFlipY > 1 || savedDpi > 6 || savedMotion > 6 ||
@@ -184,8 +188,18 @@ namespace controller
     _styleSaved = true;
     _sleepTimeoutMs = savedSleepMs;
     _brightness = savedBrightness;
+    _ledBrightness = savedLedBrightness;
+    _ledIdleColorIndex =
+        savedLedColor < kJoystickRgbIdleColorCount ? savedLedColor : 0;
+    _ledColorCycle = savedLedCycle != 0;
     _selectedSleepIndex = 1;
     M5.Display.setBrightness(_brightness);
+    const uint32_t idleColor =
+        scaleRgb(kJoystickRgbIdleColors[_ledIdleColorIndex], _ledBrightness);
+    if (joystickFound && writeJoystickRgb(idleColor))
+    {
+      _joystickRgbColor = idleColor;
+    }
     _lastValidInputAt = millis();
     return true;
   }
@@ -288,6 +302,10 @@ namespace controller
     state.brightnessMode = _mode == Mode::Brightness;
     state.brightnessSaved = _brightnessSaved;
     state.brightness = _brightness;
+    state.brightnessItem = _brightnessItem;
+    state.ledBrightness = _ledBrightness;
+    state.ledIdleColorIndex = _ledIdleColorIndex;
+    state.ledColorCycle = _ledColorCycle;
     state.sleepMode = _mode == Mode::Sleep;
     state.sleepTimeoutMs = _sleepTimeoutMs;
     state.orientationSaved = _orientationSaved;
@@ -402,6 +420,51 @@ namespace controller
         (static_cast<uint16_t>(axes[3]) << 8));
     state.buttonPressed = button == 0;
     return true;
+  }
+
+  bool ControllerFeatures::writeJoystickRgb(uint32_t color)
+  {
+    // Register 0x30 takes a little-endian 0x00RRGGBB value. The unit's STM32
+    // drives the WS2812 on PA4 from this register, so the LED is not connected
+    // to an ESP32 GPIO.
+    const uint8_t data[4] = {
+        static_cast<uint8_t>(color & 0xFF),
+        static_cast<uint8_t>((color >> 8) & 0xFF),
+        static_cast<uint8_t>((color >> 16) & 0xFF),
+        static_cast<uint8_t>((color >> 24) & 0xFF)};
+    return M5.Ex_I2C.writeRegister(kJoystickAddress, kJoystickRgbRegister,
+                                   data, sizeof(data), kI2cFrequency);
+  }
+
+  void ControllerFeatures::updateJoystickRgb(int16_t x, int16_t y,
+                                             uint32_t now)
+  {
+    if (now - _lastJoystickRgbAt < kJoystickRgbUpdateIntervalMs)
+    {
+      return;
+    }
+    _lastJoystickRgbAt = now;
+
+    uint32_t color = kJoystickRgbIdleColors[_ledIdleColorIndex];
+    if (_ledColorCycle)
+    {
+      const float fx = static_cast<float>(x);
+      const float fy = static_cast<float>(y);
+      if (sqrtf(fx * fx + fy * fy) >=
+          static_cast<float>(kJoystickRgbIdleThreshold))
+      {
+        color = joystickRgbColor(x, y);
+      }
+    }
+    color = scaleRgb(color, _ledBrightness);
+    if (color == _joystickRgbColor)
+    {
+      return;
+    }
+    if (writeJoystickRgb(color))
+    {
+      _joystickRgbColor = color;
+    }
   }
 
   bool ControllerFeatures::rebootJoystick()
@@ -731,6 +794,26 @@ namespace controller
     return true;
   }
 
+  bool ControllerFeatures::saveJoystickRgbSettings()
+  {
+    Preferences preferences;
+    if (!preferences.begin("blehid", false))
+    {
+      Serial.println("[controller] failed to open NVS to save LED settings");
+      return false;
+    }
+    const size_t brightWritten =
+        preferences.putUChar("ledBright", _ledBrightness);
+    const size_t colorWritten =
+        preferences.putUChar("ledColor", _ledIdleColorIndex);
+    const size_t cycleWritten =
+        preferences.putUChar("ledCycle", _ledColorCycle ? 1 : 0);
+    preferences.end();
+    return brightWritten == sizeof(uint8_t) &&
+           colorWritten == sizeof(uint8_t) &&
+           cycleWritten == sizeof(uint8_t);
+  }
+
   bool ControllerFeatures::saveSleepTimeout()
   {
     Preferences preferences;
@@ -774,7 +857,7 @@ namespace controller
     }
     if (_mode == Mode::Brightness && !_brightnessSaved)
     {
-      _brightnessSaved = saveBrightness();
+      _brightnessSaved = saveBrightness() && saveJoystickRgbSettings();
     }
     if (_mode == Mode::Sleep)
     {
@@ -839,7 +922,9 @@ namespace controller
     {
       _brightnessSaved = true;
       _brightnessStickCentered = true;
+      _brightnessItemStickCentered = true;
       _lastBrightnessAdjustAt = millis();
+      _lastBrightnessItemAt = millis();
       M5.Display.setBrightness(_brightness);
     }
     if (_mode == Mode::Sleep)
@@ -1114,6 +1199,10 @@ namespace controller
           _joystickError = false;
           _joystickErrorCount = 0;
           _joystickRecoveryBackoffMs = 0;
+          // A reboot or Grove power cycle resets the unit's LED; force the
+          // next successful poll to write the current color again.
+          _joystickRgbColor = 0xFFFFFFFF;
+          _lastJoystickRgbAt = 0;
         }
         else
         {
@@ -1130,6 +1219,7 @@ namespace controller
     _joystickError = false;
     _joystickErrorCount = 0;
     _joystickRecoveryBackoffMs = 0;
+    updateJoystickRgb(joystick.x, joystick.y, now);
     if (std::abs(joystick.x) >= kIdleMovementThreshold ||
         std::abs(joystick.y) >= kIdleMovementThreshold ||
         joystick.buttonPressed)
@@ -1276,7 +1366,7 @@ namespace controller
 
     if (_mode == Mode::Brightness)
     {
-      handleBrightnessMode(x, now, joystick);
+      handleBrightnessMode(x, y, now, joystick);
       return;
     }
 

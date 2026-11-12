@@ -47,6 +47,10 @@ namespace controller
     bool brightnessMode = false;
     bool brightnessSaved = true;
     uint8_t brightness = 180;
+    uint8_t brightnessItem = 0;
+    uint8_t ledBrightness = 64;
+    uint8_t ledIdleColorIndex = 0;
+    bool ledColorCycle = true;
     bool sleepMode = false;
     uint32_t sleepTimeoutMs = 60000;
     bool flipX = false;

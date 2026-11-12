@@ -9,6 +9,21 @@ namespace
 constexpr uint8_t kJoystickAddress = 0x63;
 constexpr uint8_t kJoystickOffsetRegister = 0x50;
 constexpr uint8_t kJoystickButtonRegister = 0x20;
+constexpr uint8_t kJoystickRgbRegister = 0x30;
+constexpr uint32_t kJoystickRgbUpdateIntervalMs = 50;
+constexpr int32_t kJoystickRgbIdleThreshold = 350;
+constexpr uint32_t kJoystickRgbIdleColors[] = {
+    0x00FFFFFF, // White
+    0x00FF0000, // Red
+    0x0000FF00, // Green
+    0x000000FF, // Blue
+    0x00FFFF00, // Yellow
+    0x0000FFFF, // Cyan
+    0x00FF00FF, // Magenta
+    0x00FF8000, // Orange
+};
+constexpr uint8_t kJoystickRgbIdleColorCount = 8;
+constexpr uint8_t kBrightnessItemCount = 4;
 constexpr uint32_t kI2cFrequency = 100000;
 constexpr uint8_t kJoystickProbeAttempts = 12;
 constexpr uint32_t kJoystickProbeDelayMs = 100;
@@ -82,6 +97,73 @@ constexpr float kAirMouseBoostDps = 300.0f;
 constexpr float kMotionScales[] = {5.0f, 8.0f, 12.0f, 18.0f,
                                    26.0f, 36.0f, 50.0f};
 constexpr uint32_t kMotionAdjustRepeatMs = 300;
+
+// Maps the raw joystick angle onto the full HSV hue wheel. Each direction
+// therefore gets its own color, cycling through red, yellow, green, cyan,
+// blue and magenta as the stick is rotated.
+uint32_t joystickRgbColor(int16_t x, int16_t y)
+{
+  const float fx = static_cast<float>(x);
+  const float fy = static_cast<float>(y);
+
+  float hue = atan2f(fy, fx) * (3.0f / PI); // -3..3
+  if (hue < 0.0f)
+  {
+    hue += 6.0f;
+  }
+  const uint8_t sector = static_cast<uint8_t>(hue) % 6;
+  const float fraction = hue - floorf(hue);
+  const uint8_t p = 0;
+  const uint8_t q = static_cast<uint8_t>((1.0f - fraction) * 255.0f);
+  const uint8_t t = static_cast<uint8_t>(fraction * 255.0f);
+
+  uint8_t r = 0;
+  uint8_t g = 0;
+  uint8_t b = 0;
+  switch (sector)
+  {
+  case 0:
+    r = 255;
+    g = t;
+    b = p;
+    break;
+  case 1:
+    r = q;
+    g = 255;
+    b = p;
+    break;
+  case 2:
+    r = p;
+    g = 255;
+    b = t;
+    break;
+  case 3:
+    r = p;
+    g = q;
+    b = 255;
+    break;
+  case 4:
+    r = t;
+    g = p;
+    b = 255;
+    break;
+  default:
+    r = 255;
+    g = p;
+    b = q;
+    break;
+  }
+  return (static_cast<uint32_t>(r) << 16) |
+         (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
+}
+
+uint32_t scaleRgb(uint32_t color, uint8_t brightness)
+{
+  const uint32_t r = (((color >> 16) & 0xFF) * brightness) / 255;
+  const uint32_t g = (((color >> 8) & 0xFF) * brightness) / 255;
+  const uint32_t b = ((color & 0xFF) * brightness) / 255;
+  return (r << 16) | (g << 8) | b;
+}
 
 int8_t axisToMouse(int16_t value, uint8_t dpiLevel)
 {

@@ -65,6 +65,8 @@ namespace controller
     bool readJoystick(JoystickState &state);
     bool readJoystickRegister(uint8_t address, uint8_t reg, uint8_t *data,
                               size_t length);
+    bool writeJoystickRgb(uint32_t color);
+    void updateJoystickRgb(int16_t x, int16_t y, uint32_t now);
     bool joystickResponds();
     bool recoverJoystick();
     bool rebootJoystick();
@@ -79,6 +81,7 @@ namespace controller
     bool saveColorPalette(ColorPalette palette);
     ColorPalette loadColorPalette();
     bool saveBrightness();
+    bool saveJoystickRgbSettings();
     bool saveSleepTimeout();
     void applyMode(Mode mode);
     void toggleMicrophoneMode();
@@ -100,7 +103,7 @@ namespace controller
     void handleOrientationMode(JoystickState &joystick, uint32_t now);
     void handleDpiMode(int32_t x, int32_t y, uint32_t now, JoystickState &joystick);
     void handleStyleMode(uint32_t now, JoystickState &joystick);
-    void handleBrightnessMode(int32_t x, uint32_t now, JoystickState &joystick);
+    void handleBrightnessMode(int32_t x, int32_t y, uint32_t now, JoystickState &joystick);
     void handleSleepMode(int32_t x, uint32_t now, JoystickState &joystick);
     void toggleMagnifier();
     void zoomMagnifier(bool zoomIn);
@@ -141,6 +144,12 @@ namespace controller
     uint8_t _brightness = 180;
     uint32_t _lastBrightnessAdjustAt = 0;
     bool _brightnessStickCentered = true;
+    uint8_t _brightnessItem = 0;
+    uint8_t _ledBrightness = 64;
+    uint8_t _ledIdleColorIndex = 0;
+    bool _ledColorCycle = true;
+    uint32_t _lastBrightnessItemAt = 0;
+    bool _brightnessItemStickCentered = true;
     uint32_t _lastSleepAdjustAt = 0;
     bool _sleepStickCentered = true;
     uint32_t _selectedSleepIndex = 1;
@@ -185,6 +194,8 @@ namespace controller
     uint32_t _lastBatteryAt = 0;
     uint32_t _lastJoystickLogAt = 0;
     uint32_t _lastJoystickRecoveryAt = 0;
+    uint32_t _lastJoystickRgbAt = 0;
+    uint32_t _joystickRgbColor = 0;
     uint32_t _joystickRecoveryBackoffMs = 0;
     uint32_t _lastGestureAt = 0;
     uint32_t _lastValidInputAt = 0;
