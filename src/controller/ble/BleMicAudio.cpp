@@ -1,4 +1,4 @@
-#include "BleMicAudio.h"
+#include "../BleMicAudio.h"
 
 #include <BLECharacteristic.h>
 #include <BLEDescriptor.h>
@@ -391,6 +391,74 @@ namespace controller
     Serial.println("[mic] audio operation cancelled");
   }
 
+  bool BleMicAudio::externalLiveStart() {
+    if (_status != MicAudioStatus::Idle || !subscribed()) return false;
+    _externalAudio = true;
+    _status = MicAudioStatus::Live;
+    _sequence = 0;
+    _stepIndex = 0;
+    Serial.println("[mic] external live stream started");
+    return true;
+  }
+
+  bool BleMicAudio::externalLiveStop() {
+    if (!_externalAudio || _status != MicAudioStatus::Live) return false;
+    sendEndMarker(_sequence, kFlagLive);
+    _status = MicAudioStatus::Idle;
+    _externalAudio = false;
+    Serial.println("[mic] external live stream stopped");
+    return true;
+  }
+
+  bool BleMicAudio::externalLiveFrame(const int16_t *samples) {
+    if (!_externalAudio || _status != MicAudioStatus::Live || !subscribed() ||
+        samples == nullptr) {
+      return false;
+    }
+    std::memcpy(_samples, samples, sizeof(_samples));
+    processCapturedFrame(millis());
+    return true;
+  }
+
+  bool BleMicAudio::externalClipStart() {
+    if (_status != MicAudioStatus::Idle || !subscribed()) return false;
+    _externalAudio = true;
+    _status = MicAudioStatus::Recording;
+    _clipFrameCount = 0;
+    _sequence = 0;
+    _stepIndex = 0;
+    Serial.println("[mic] external clip recording started");
+    return true;
+  }
+
+  bool BleMicAudio::externalClipFrame(const int16_t *samples) {
+    if (!_externalAudio || _status != MicAudioStatus::Recording ||
+        !subscribed() || samples == nullptr) {
+      return false;
+    }
+    if (_clipFrameCount >= kMaxClipFrames) {
+      externalClipFinish();
+      return false;
+    }
+    std::memcpy(_samples, samples, sizeof(_samples));
+    encodeFrame(_encodedFrame);
+    std::memcpy(_clipFrames +
+                    static_cast<size_t>(_clipFrameCount) * kEncodedFrameBytes,
+                _encodedFrame, kEncodedFrameBytes);
+    ++_clipFrameCount;
+    return true;
+  }
+
+  bool BleMicAudio::externalClipFinish() {
+    if (!_externalAudio || _status != MicAudioStatus::Recording) return false;
+    _sendFrameIndex = 0;
+    _lastFrameSentAt = millis() - kFrameIntervalMs;
+    _status = MicAudioStatus::Sending;
+    Serial.printf("[mic] sending external clip (%u frames)\n",
+                  static_cast<unsigned>(_clipFrameCount));
+    return true;
+  }
+
   void BleMicAudio::encodeFrame(uint8_t *output)
   {
     int32_t predictor = _samples[0];
@@ -533,7 +601,8 @@ namespace controller
          _status == MicAudioStatus::Sending) &&
         !subscribed())
     {
-      stopCapture();
+      if (!_externalAudio) stopCapture();
+      _externalAudio = false;
       _clipFrameCount = 0;
       _sendFrameIndex = 0;
       _status = M5.Mic.isEnabled() ? MicAudioStatus::Idle
@@ -545,6 +614,7 @@ namespace controller
     if (_status == MicAudioStatus::Live ||
         _status == MicAudioStatus::Recording)
     {
+      if (_externalAudio) return;
       if (_recordPending && M5.Mic.isRecording() == 0)
       {
         _recordPending = false;
@@ -589,6 +659,7 @@ namespace controller
 
     sendEndMarker(_clipFrameCount, clipFlag);
     _status = MicAudioStatus::Idle;
+    _externalAudio = false;
     _clipFrameCount = 0;
     _sendFrameIndex = 0;
     Serial.println("[mic] clip transfer complete");

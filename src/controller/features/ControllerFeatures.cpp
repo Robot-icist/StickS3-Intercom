@@ -1,5 +1,5 @@
-#include "ControllerFeatures.h"
-#include "ControllerConstants.h"
+#include "../ControllerFeatures.h"
+#include "../ControllerConstants.h"
 
 #include <M5Unified.h>
 #include <Preferences.h>
@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "BleHidDevice.h"
+#include "../BleHidDevice.h"
 
 namespace controller
 {
@@ -83,8 +83,6 @@ namespace controller
       return "Dark";
     case ColorPalette::Light:
       return "Light";
-    case ColorPalette::HighContrast:
-      return "High Contrast";
     case ColorPalette::Cyberpunk:
       return "Cyberpunk";
     case ColorPalette::Monochrome:
@@ -180,7 +178,8 @@ namespace controller
     _pendingFlipY = _flipY;
     _dpiLevel = savedDpi;
     _motionLevel = savedMotion;
-    _motionFlipX = savedMotionFlipX != 0;
+    _motionFlipX = savedMotionFlipX != 0
+    ;
     _motionFlipY = savedMotionFlipY != 0;
     _mode = static_cast<Mode>(savedMode);
     _colorPalette = loadColorPalette();

@@ -30,6 +30,14 @@ namespace controller
     bool toggleClipRecording();
     void cancel();
     bool subscribed() const;
+
+    // External (web) audio input: PCM16 samples at 16 kHz, 320 per frame.
+    bool externalLiveStart();
+    bool externalLiveStop();
+    bool externalLiveFrame(const int16_t* samples);
+    bool externalClipStart();
+    bool externalClipFrame(const int16_t* samples);
+    bool externalClipFinish();
     MicAudioStatus status() const { return _status; }
     uint16_t clipFrameCount() const { return _clipFrameCount; }
 
@@ -64,6 +72,7 @@ namespace controller
     uint8_t _stepIndex = 0;
     bool _recordPending = false;
     bool _micRunning = false;
+    bool _externalAudio = false;
     MicAudioStatus _status = MicAudioStatus::Unavailable;
   };
 

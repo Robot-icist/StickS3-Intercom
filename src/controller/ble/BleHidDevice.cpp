@@ -1,4 +1,4 @@
-#include "BleHidDevice.h"
+#include "../BleHidDevice.h"
 
 #include <BLECharacteristic.h>
 #include <BLEDescriptor.h>
@@ -16,7 +16,7 @@
 #include <new>
 #include <utility>
 
-#include "BleMicAudio.h"
+#include "../BleMicAudio.h"
 
 namespace controller {
 namespace {

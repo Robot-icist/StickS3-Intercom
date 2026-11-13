@@ -1,4 +1,4 @@
-#include "BleHidController.h"
+#include "../BleHidController.h"
 
 #include <M5Unified.h>
 
@@ -29,6 +29,7 @@ bool BleHidController::begin() {
     _ui.showError(_hid.errorMessage());
     return false;
   }
+  _web.begin(&_hid, &_micAudio);
   return true;
 }
 
@@ -42,6 +43,7 @@ void BleHidController::loop() {
   _features.update(now);
   _micAudio.update(now);
   _wifiOta.loop();
+  _web.loop(&_wifiOta);
 
   if (_wifiOta.otaInProgress()) {
     _features.resetIdleTimer();

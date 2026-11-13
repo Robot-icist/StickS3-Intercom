@@ -6,6 +6,7 @@
 #include "BleHidDevice.h"
 #include "ControllerFeatures.h"
 #include "ControllerUi.h"
+#include "WebHidServer.h"
 #include "WifiOtaService.h"
 
 namespace controller {
@@ -21,6 +22,7 @@ class BleHidController {
   ControllerFeatures _features{_hid, _micAudio};
   ControllerUi _ui;
   WifiOtaService _wifiOta;
+  WebHidServer _web;
   uint32_t _lastRenderAt = 0;
 };
 

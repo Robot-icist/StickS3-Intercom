@@ -2,84 +2,110 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <meta name="theme-color" content="#1a1a2e">
-  <title>Intercom Web Client</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>StickS3 Web Controller</title>
   <link rel="stylesheet" href="style.css">
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
   <div id="app">
     <header>
-      <h1>Intercom</h1>
+      <div class="brand">StickS3</div>
+      <button id="ctrl-mode" class="toggle-btn">Mode: Joystick</button>
       <div id="status" class="status disconnected">Disconnected</div>
     </header>
 
     <main>
-      <div id="local-peer-info" aria-label="This web client's peer name">
-        <span>Your peer name</span>
-        <strong id="local-peer-name"></strong>
-      </div>
-
-      <div id="peer-info">
-        <div class="peer-name">All peers</div>
-        <div class="peer-rssi">Broadcasting</div>
-      </div>
-
-      <div id="audio-levels">
-        <div class="level-container">
-          <label>Mic input <span id="mic-level-value">0%</span></label>
-          <div class="level-bar"><div class="level-fill mic-level"></div></div>
-          <div id="mic-status" class="mic-status">Waiting for connection</div>
+      <section id="joystick-section" class="panel">
+        <div id="joystick" class="joystick">
+          <div id="stick" class="stick"></div>
         </div>
-        <div class="level-container">
-          <label>RX</label>
-          <div class="level-bar"><div class="level-fill rx-level"></div></div>
+        <div class="joystick-hint">Drag to move</div>
+      </section>
+
+      <section class="buttons">
+        <button id="btn-left" class="action-btn">Left Click</button>
+        <button id="btn-right" class="action-btn">Right Click</button>
+        <button id="btn-scroll-up" class="action-btn">Scroll Up</button>
+        <button id="btn-scroll-down" class="action-btn">Scroll Down</button>
+      </section>
+
+      <section class="gyro-panel">
+        <div class="row">
+          <label>Gyro / Air Mouse</label>
+          <button id="gyro-toggle" class="toggle-btn">Enable</button>
         </div>
-      </div>
-      <div id="tx-status" class="tx-status">Offline</div>
-
-      <div id="peer-list" class="peer-list">
-        <h3>Select target</h3>
-        <p class="peer-list-hint">
-          Applies to Live / Clip and Spy. Spy requires selecting one peer.
-        </p>
-        <div id="peer-items"></div>
-      </div>
-
-      <div id="controls">
-        <button id="talk-btn" class="talk-btn">Hold to Talk</button>
-        <button id="clip-btn" class="clip-btn">Record Clip</button>
-        <button id="mute-btn" class="mute-btn">Mute</button>
-      </div>
-
-      <div id="spy-controls" class="spy-controls hidden">
-        <button id="spy-live-btn" class="spy-btn">Spy Live</button>
-        <button id="spy-clip-btn" class="spy-btn">Spy Clip</button>
-        <button id="spy-stop-btn" class="spy-btn stop">Stop Spy</button>
-      </div>
-
-      <div id="settings">
-        <div class="setting">
-          <label for="volume">Mic gain <span id="mic-gain-value">100%</span></label>
-          <input type="range" id="volume" min="0" max="200" value="100">
+        <div class="hint">Tilt/rotate the phone to move the pointer. No calibration needed.</div>
+        <canvas id="orient" width="200" height="200"></canvas>
+        <div class="row">
+          <button id="calib" class="toggle-btn">Calibrate</button>
         </div>
-        <div class="setting">
-          <span class="setting-label">Mode</span>
-          <div id="mode-toggle" class="mode-toggle"
-               role="group" aria-label="Intercom mode">
-            <button type="button" class="mode-btn active"
-                    data-mode="live" aria-pressed="true">Live / Clip</button>
-            <button type="button" class="mode-btn"
-                    data-mode="spy" aria-pressed="false">Spy</button>
-          </div>
+
+        <div class="values">
+          <span id="gyro-values">gx:0 gy:0 gz:0</span>
+          <span id="accel-values">ax:0 ay:0 az:0</span>
         </div>
-      </div>
+        <div class="row">
+          <label>Speed</label>
+          <input type="range" id="sens" min="0.2" max="5" step="0.1" value="1.5">
+        </div>
+        <div class="row">
+          <label>X axis</label>
+          <select id="axisx">
+            <option value="alpha">Yaw (alpha)</option>
+            <option value="beta">Pitch (beta)</option>
+            <option value="gamma">Roll (gamma)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Y axis</label>
+          <select id="axisy">
+            <option value="beta">Pitch (beta)</option>
+            <option value="alpha">Yaw (alpha)</option>
+            <option value="gamma">Roll (gamma)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Flip X</label>
+          <input type="checkbox" id="flipx">
+          <label>Flip Y</label>
+          <input type="checkbox" id="flipy">
+        </div>
+      </section>
+
+      <section class="mic-panel">
+        <div class="row">
+          <button id="mic-live" class="mic-btn">Hold to Talk</button>
+          <button id="mic-clip" class="mic-btn">Record Clip</button>
+        </div>
+        <div id="mic-status" class="mic-status">Mic idle</div>
+        <div class="level-bar"><div id="mic-level" class="level-fill"></div></div>
+      </section>
+
+      <section class="keys">
+        <div class="row">
+          <button class="key-btn" data-key="Enter">Enter</button>
+          <button class="key-btn" data-key="Escape">Esc</button>
+          <button class="key-btn" data-key="Tab">Tab</button>
+          <button class="key-btn" data-key="Backspace">Back</button>
+        </div>
+        <div class="row">
+          <button class="key-btn" data-key="ArrowUp">Up</button>
+          <button class="key-btn" data-key="ArrowDown">Down</button>
+          <button class="key-btn" data-key="ArrowLeft">Left</button>
+          <button class="key-btn" data-key="ArrowRight">Right</button>
+        </div>
+        <div class="row">
+          <button class="key-btn" data-hotkey="c">Ctrl+C</button>
+          <button class="key-btn" data-hotkey="v">Ctrl+V</button>
+          <button class="key-btn" data-hotkey="z">Ctrl+Z</button>
+        </div>
+      </section>
 
       <div id="log" class="log"></div>
     </main>
   </div>
-
   <script src="app.js"></script>
 </body>
 </html>

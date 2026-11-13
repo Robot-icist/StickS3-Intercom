@@ -35,13 +35,12 @@ namespace controller
       Default = 0,    // Current default palette
       Dark = 1,       // Darker theme
       Light = 2,      // Light theme
-      HighContrast = 3, // High contrast for accessibility
-      Cyberpunk = 4,  // Neon/cyberpunk theme
-      Monochrome = 5, // Monochrome/grayscale
-      Sepia = 6,      // Sepia/vintage theme
-      Forest = 7,     // Forest green theme
+      Cyberpunk = 3,  // Neon/cyberpunk theme
+      Monochrome = 4, // Monochrome/grayscale
+      Sepia = 5,      // Sepia/vintage theme
+      Forest = 6,     // Forest green theme
     };
-    static constexpr uint8_t kPaletteCount = 8;
+    static constexpr uint8_t kPaletteCount = 7;
 
     ControllerFeatures(BleHidDevice &hid, BleMicAudio &micAudio)
         : _hid(hid), _micAudio(micAudio) {}

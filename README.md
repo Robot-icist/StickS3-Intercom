@@ -829,3 +829,25 @@ companion software. The next steps are to confirm BLE notification throughput
 and audio quality on hardware, then add speaker reception as a separate mode if
 desired. Wi-Fi audio can be evaluated later while keeping BLE HID active,
 followed by coexistence tests with the fixed-channel ESP-NOW intercom.
+
+## Web controller for the BLE HID controller
+
+The `sticks3_ble_hid` environment now also builds a self-contained HTTPS web
+controller served from the StickS3. It exposes the same core inputs as the
+physical controller (on-screen joystick, air-mouse via phone gyro/accelerometer,
+mouse buttons, scroll, keyboard shortcuts, and microphone streaming) so the
+phone can drive the PC while the controller is charging.
+
+- Web assets live in `src/controller/data_ble/` and are copied into `data/` by
+  `scripts/copy_ble_web_data.py` during the `sticks3_ble_hid` build.
+- The firmware serves them over HTTPS (port 443) with a self-signed
+  certificate, enabling `getUserMedia` for the microphone.
+- mDNS advertises `https://STICK-XXXX-web.local/`.
+- Source is organized under `src/controller/{core,ui,features,ble,services}`.
+
+## TODO
+
+- Create a native Flutter app replicating all BLE controller features (modes,
+  air mouse, magnifier, navigation, voice actions, microphone, configuration)
+  so users can opt out of the BLE controller entirely and drive everything from
+  the phone without the web page.

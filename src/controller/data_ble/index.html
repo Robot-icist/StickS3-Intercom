@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>StickS3 Web Controller</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="brand">StickS3</div>
+      <button id="ctrl-mode" class="toggle-btn">Mode: Joystick</button>
+      <div id="status" class="status disconnected">Disconnected</div>
+    </header>
+
+    <main>
+      <section id="joystick-section" class="panel">
+        <div id="joystick" class="joystick">
+          <div id="stick" class="stick"></div>
+        </div>
+        <div class="joystick-hint">Drag to move</div>
+      </section>
+
+      <section class="buttons">
+        <button id="btn-left" class="action-btn">Left Click</button>
+        <button id="btn-right" class="action-btn">Right Click</button>
+        <button id="btn-scroll-up" class="action-btn">Scroll Up</button>
+        <button id="btn-scroll-down" class="action-btn">Scroll Down</button>
+      </section>
+
+      <section class="gyro-panel">
+        <div class="row">
+          <label>Gyro / Air Mouse</label>
+          <button id="gyro-toggle" class="toggle-btn">Enable</button>
+        </div>
+        <div class="hint">Tilt/rotate the phone to move the pointer. No calibration needed.</div>
+        <canvas id="orient" width="200" height="200"></canvas>
+        <div class="row">
+          <button id="calib" class="toggle-btn">Calibrate</button>
+        </div>
+
+        <div class="values">
+          <span id="gyro-values">gx:0 gy:0 gz:0</span>
+          <span id="accel-values">ax:0 ay:0 az:0</span>
+        </div>
+        <div class="row">
+          <label>Speed</label>
+          <input type="range" id="sens" min="0.2" max="5" step="0.1" value="1.5">
+        </div>
+        <div class="row">
+          <label>X axis</label>
+          <select id="axisx">
+            <option value="alpha">Yaw (alpha)</option>
+            <option value="beta">Pitch (beta)</option>
+            <option value="gamma">Roll (gamma)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Y axis</label>
+          <select id="axisy">
+            <option value="beta">Pitch (beta)</option>
+            <option value="alpha">Yaw (alpha)</option>
+            <option value="gamma">Roll (gamma)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Flip X</label>
+          <input type="checkbox" id="flipx">
+          <label>Flip Y</label>
+          <input type="checkbox" id="flipy">
+        </div>
+      </section>
+
+      <section class="mic-panel">
+        <div class="row">
+          <button id="mic-live" class="mic-btn">Hold to Talk</button>
+          <button id="mic-clip" class="mic-btn">Record Clip</button>
+        </div>
+        <div id="mic-status" class="mic-status">Mic idle</div>
+        <div class="level-bar"><div id="mic-level" class="level-fill"></div></div>
+      </section>
+
+      <section class="keys">
+        <div class="row">
+          <button class="key-btn" data-key="Enter">Enter</button>
+          <button class="key-btn" data-key="Escape">Esc</button>
+          <button class="key-btn" data-key="Tab">Tab</button>
+          <button class="key-btn" data-key="Backspace">Back</button>
+        </div>
+        <div class="row">
+          <button class="key-btn" data-key="ArrowUp">Up</button>
+          <button class="key-btn" data-key="ArrowDown">Down</button>
+          <button class="key-btn" data-key="ArrowLeft">Left</button>
+          <button class="key-btn" data-key="ArrowRight">Right</button>
+        </div>
+        <div class="row">
+          <button class="key-btn" data-hotkey="c">Ctrl+C</button>
+          <button class="key-btn" data-hotkey="v">Ctrl+V</button>
+          <button class="key-btn" data-hotkey="z">Ctrl+Z</button>
+        </div>
+      </section>
+
+      <div id="log" class="log"></div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
