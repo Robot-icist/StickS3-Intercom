@@ -183,6 +183,7 @@ void drawNetworkIdentity(LGFX_Sprite &screen,
 
 bool ControllerUi::begin()
 {
+  M5.Display.wakeup();
   if (M5.Display.width() <= 0)
   {
     Serial.println("[controller] display initialization failed");
@@ -237,6 +238,9 @@ void ControllerUi::render(const ControllerViewState &state, uint32_t now)
   // Shared chrome for every mode: draw the battery once and present the frame.
   drawBatteryStatus(_screen, state.batteryLevel, state.batteryCharging, 2, p);
   _screen.pushSprite(0, 0);
+  // Do not block the main loop waiting for the display DMA; keeping the UI
+  // responsive is more important than perfect frame pacing.
+  // M5.Display.waitDisplay();
 
   if (state.otaInProgress)
   {
@@ -283,7 +287,7 @@ void ControllerUi::render(const ControllerViewState &state, uint32_t now)
     }
   }
 
-  M5.Display.waitDisplay();
+  // M5.Display.waitDisplay();
 }
 
 void ControllerUi::renderModePicker(const ControllerViewState &state,

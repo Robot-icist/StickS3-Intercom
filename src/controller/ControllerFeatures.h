@@ -157,6 +157,8 @@ namespace controller
     uint32_t _lastStyleInputAt = 0;
     bool _havePreviousImu = false;
     bool _joystickError = false;
+    int16_t _joystickX = 0;
+    int16_t _joystickY = 0;
     bool _flipX = false;
     bool _flipY = false;
     bool _pendingFlipX = false;

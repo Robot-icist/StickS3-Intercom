@@ -225,10 +225,16 @@ namespace controller
       _lastValidInputAt = now;
     }
 
-    if (_sleepTimeoutMs > 0 &&
-        _micAudio.status() != MicAudioStatus::Recording &&
-        _micAudio.status() != MicAudioStatus::Sending &&
-        _micAudio.status() != MicAudioStatus::Live)
+    if (_batteryCharging)
+    {
+      // Avoid deep sleep while charging: waking from deep sleep on USB power
+      // leaves the BLE HID link and UI unresponsive on some units.
+      _lastValidInputAt = now;
+    }
+    else if (_sleepTimeoutMs > 0 &&
+             _micAudio.status() != MicAudioStatus::Recording &&
+             _micAudio.status() != MicAudioStatus::Sending &&
+             _micAudio.status() != MicAudioStatus::Live)
     {
       if (now - _lastValidInputAt >= _sleepTimeoutMs)
       {
@@ -323,6 +329,8 @@ namespace controller
     state.batteryLevel = _batteryLevel;
     state.batteryCharging = _batteryCharging;
     state.joystickError = _joystickError;
+    state.joystickX = _joystickX;
+    state.joystickY = _joystickY;
     state.pendingBaseRotation = _pendingBaseRotation;
     state.roll = _roll;
     state.pitch = _pitch;
@@ -1313,6 +1321,9 @@ namespace controller
     {
       y = -y;
     }
+
+    _joystickX = static_cast<int16_t>(x);
+    _joystickY = static_cast<int16_t>(y);
 
     if (_mode == Mode::Dpi)
     {

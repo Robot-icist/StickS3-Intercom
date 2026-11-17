@@ -76,6 +76,8 @@ namespace controller
     float pitch = 0.0f;
     float yaw = 0.0f;
     uint32_t lastValidInputAt = 0;
+    int16_t joystickX = 0;
+    int16_t joystickY = 0;
   };
 
   void drawBatteryStatus(LGFX_Sprite &screen, int8_t level, bool charging,

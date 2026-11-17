@@ -249,13 +249,18 @@
     await ensureMic();
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     const src = audioCtx.createMediaStreamSource(micStream);
-    processor = audioCtx.createScriptProcessor(512, 1, 1);
+    processor = audioCtx.createScriptProcessor(320, 1, 1);
     src.connect(processor);
     processor.connect(audioCtx.destination);
     processor.onaudioprocess = (e) => {
       if (!micLive) return;
       const pcm = floatToPcm16(e.inputBuffer.getChannelData(0));
       for (let i = 0; i < pcm.length; i++) micBuf.push(pcm[i]);
+      // send immediately when we have a full frame (320 samples = 20ms)
+      while (micBuf.length >= 320) {
+        const chunk = new Int16Array(micBuf.splice(0, 320));
+        sendBin(chunk.buffer);
+      }
       let sum = 0;
       for (let i = 0; i < pcm.length; i++) sum += Math.abs(pcm[i]);
       const lvl = Math.min(100, (sum / pcm.length / 32768) * 400);
@@ -264,7 +269,6 @@
     micLive = true;
     micStatus.textContent = 'Live streaming';
     send({ type: 'mic', action: 'live_start' });
-    micTimer = setInterval(flushMic, 20);
     log('mic live start');
   }
   function stopLive() {
@@ -307,7 +311,10 @@
           const chunkSize = 320;
           for (let i = 0; i < pcm.length; i += chunkSize) {
             const chunk = pcm.slice(i, i + chunkSize);
-            if (chunk.length === chunkSize) { sendBin(chunk.buffer); await new Promise((r) => setTimeout(r, 20)); }
+            if (chunk.length === chunkSize) { 
+              sendBin(chunk.buffer); 
+              await new Promise((r) => setTimeout(r, 20)); 
+            }
           }
           send({ type: 'mic', action: 'clip_end' });
           micStatus.textContent = 'Mic idle';
