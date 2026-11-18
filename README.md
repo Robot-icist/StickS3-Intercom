@@ -5,9 +5,22 @@ ESP-NOW intercom firmware for the **M5Stack StickS3**. Pair it with the
 
 ## Features
 
-- Live push-to-talk audio between the two boards (16 kHz mono, IMA ADPCM).
+- Live push-to-talk audio between boards (16 kHz mono, IMA ADPCM).
 - Clip mode: record up to 15 s, then transmit it at 1x real time.
 - Automatic peer discovery and online/offline indication.
+- Works with any mix of StickS3 and AtomS3R units on the same ESP-NOW
+  channel: multiple StickS3 units, multiple AtomS3R units, or a mix of both
+  can share one intercom network. It is not limited to a single StickS3 and
+  a single AtomS3R.
+- Browser peers: when Wi-Fi is connected, the firmware serves a web client over
+  HTTPS, so any phone, tablet or PC with a web browser and a microphone can
+  join the intercom network as another peer.
+- Transport flexibility: audio can travel over ESP-NOW or local Wi-Fi. A unit
+  connected to Wi-Fi and a unit using only ESP-NOW can still communicate; the
+  transport manager coordinates peers across both.
+- Peer selection and monitoring: target `ALL` (broadcast) or individual peers;
+  spy mode lets one peer listen through and record a clip on another peer's
+  microphone; volume and mute controls are available.
 - 135x240 UI with peer name, mode, state, VU meter and battery.
 - Audio buffers and the UI sprite live in PSRAM.
 
@@ -175,6 +188,8 @@ phase lasts about 10 seconds to make the full password easier to read.
 | Double-click **BtnA** | Toggle Live / Clip mode, or cancel an active recording. |
 
 ## UI
+
+![StickS3 device UI](./screenshots/stick-ui.png)
 
 - Header: rotating device/network/OTA details alongside the peer name (or
   `SEARCH`).
@@ -832,6 +847,8 @@ followed by coexistence tests with the fixed-channel ESP-NOW intercom.
 
 ## Web controller for the BLE HID controller
 
+![BLE web controller](./screenshots/ble-web-controller.png)
+
 The `sticks3_ble_hid` environment now also builds a self-contained HTTPS web
 controller served from the StickS3. It exposes the same core inputs as the
 physical controller (on-screen joystick, air-mouse via phone gyro/accelerometer,
@@ -844,6 +861,35 @@ phone can drive the PC while the controller is charging.
   certificate, enabling `getUserMedia` for the microphone.
 - mDNS advertises `https://STICK-XXXX-web.local/`.
 - Source is organized under `src/controller/{core,ui,features,ble,services}`.
+
+## M5Burner (M5Stack community)
+
+This repository also ships the M5Burner firmware package layout so the two
+StickS3 firmwares can be flashed from M5Burner:
+
+- `m5burner.json` describes both categories:
+  - `StickS3 BLE HID` -> `firmware_sticks3_ble_hid/`
+  - `StickS3 Intercom` -> `firmware_sticks3_intercom/`
+- Each `firmware_*` folder contains the M5Burner flash images named by
+  address (`bootloader_0x0.bin`, `partitions_0x8000.bin`,
+  `boot_app0_0xe000.bin`, `firmware_0x10000.bin`,
+  `littlefs_0x670000.bin`). These are used by the M5Burner desktop app,
+  which flashes them at their respective offsets.
+- The same folder also contains `full_flash_0x0.bin`, a single combined
+  image of all regions (flash offset `0x0`). Use this file when the
+  M5Burner website/community uploader only accepts one `.bin`: upload
+  `full_flash_0x0.bin` and set the flash offset to `0x0` (erase flash first).
+
+Build the images with PlatformIO first, then copy the generated `.bin` files
+from `.pio/build/<env>/` into the matching `firmware_*` folder before
+publishing. Run `pio run -e <env> -t m5burner_push` to rebuild the filesystem
+image, copy all four bins, and regenerate `full_flash_0x0.bin` automatically.
+
+### Intercom web client
+
+The intercom firmware also serves the shared web client:
+
+![Intercom web client](./screenshots/intercom-web-client.png)
 
 ## TODO
 

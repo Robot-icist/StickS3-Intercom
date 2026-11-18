@@ -2,8 +2,11 @@
 #include "../ControllerConstants.h"
 
 #include <M5Unified.h>
+#include <M5PM1.h>
+#include <SparkFun_BMI270_Arduino_Library.h>
 #include <Preferences.h>
 #include <esp_sleep.h>
+#include <driver/rtc_io.h>
 
 #include <algorithm>
 #include <cmath>
@@ -98,7 +101,6 @@ namespace controller
   bool ControllerFeatures::begin()
   {
     _lastBatteryAt = millis();
-    _lastJoystickRecoveryAt = millis();
     readBatteryLevel();
 
     // The Joystick2 is powered from the switchable Grove 5V rail. Keep this
@@ -380,11 +382,7 @@ namespace controller
     uint8_t button = 1;
     // Attempt the first read; if it fails, reset the I2C bus before retrying
     // so a lone glitch does not cascade into a persistent error.
-    if (!readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister, axes,
-                              sizeof(axes)))
-    {
-      resetI2CBus();
-    }
+    if (!readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister, axes, sizeof(axes))) { return false; }
     // Second register read; the bus should now be stable.
     uint8_t btn = 1;
     return readJoystickRegister(kJoystickAddress, kJoystickButtonRegister,
@@ -399,25 +397,7 @@ namespace controller
   {
     uint8_t axes[4] = {};
     uint8_t button = 1;
-    bool ok = readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister,
-                                   axes, sizeof(axes)) &&
-              readJoystickRegister(kJoystickAddress, kJoystickButtonRegister,
-                                   &button, sizeof(button));
-    if (!ok)
-    {
-      // The unit tolerates a single disturbed transfer; retry once so a lone
-      // glitch does not start the error counter.
-      resetI2CBus();
-      delayMicroseconds(kJoystickInterPhaseDelayUs);
-      ok = readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister, axes,
-                                sizeof(axes)) &&
-           readJoystickRegister(kJoystickAddress, kJoystickButtonRegister,
-                                &button, sizeof(button));
-      if (!ok)
-      {
-        return false;
-      }
-    }
+    bool ok = readJoystickRegister(kJoystickAddress, kJoystickOffsetRegister, axes, sizeof(axes)) && readJoystickRegister(kJoystickAddress, kJoystickButtonRegister, &button, sizeof(button)); if (!ok) { return false; }
 
     state.x = static_cast<int16_t>(
         static_cast<uint16_t>(axes[0]) |
@@ -474,195 +454,7 @@ namespace controller
     }
   }
 
-  bool ControllerFeatures::rebootJoystick()
-  {
-    // Register 0xFD is the unit firmware's IAP entry: writing 0xFD,0x01 makes
-    // the STM32 reset immediately instead of waiting for the Grove rail.
-    const uint8_t reboot = kJoystickRebootValue;
-    if (!M5.Ex_I2C.writeRegister(kJoystickAddress, kJoystickRebootRegister,
-                                 &reboot, 1, kI2cFrequency))
-    {
-      return false;
-    }
-    // The bootloader waits 300 ms before handing over to the application.
-    delay(kJoystickRebootSettleMs);
-    M5.Ex_I2C.release();
-    M5.Ex_I2C.begin();
-    for (uint8_t attempt = 0; attempt < kJoystickRecoveryProbeAttempts;
-         ++attempt)
-    {
-      if (joystickResponds())
-      {
-        return true;
-      }
-      delay(kJoystickProbeDelayMs);
-    }
-    return false;
-  }
-
-  void ControllerFeatures::powerCycleJoystickRail()
-  {
-    // First, perform a pure I2C bus reset to clear any stuck slave state
-    // before power-cycling the Grove rail. This often resolves issues where
-    // the STM32's stop-timeout latch is armed and the bus appears locked.
-    resetI2CBus();
-
-    M5.Ex_I2C.release();
-
-    const int sda = M5.Ex_I2C.getSDA();
-    const int scl = M5.Ex_I2C.getSCL();
-    // Sink both lines while the rail is down: the ESP32 pull-ups would
-    // otherwise feed the unit's 3.3V rail through its ESD diodes and keep the
-    // STM32 above its power-on reset threshold.
-    if (sda >= 0)
-    {
-      pinMode(sda, OUTPUT);
-      digitalWrite(sda, LOW);
-    }
-    if (scl >= 0)
-    {
-      pinMode(scl, OUTPUT);
-      digitalWrite(scl, LOW);
-    }
-
-    M5.Power.setExtOutput(false);
-    const bool railOff = M5.Power.getExtOutput();
-    delay(kJoystickPowerCycleOffMs);
-    M5.Power.setExtOutput(true);
-    const bool railRestored = M5.Power.getExtOutput();
-    delay(kJoystickPowerCycleSettleMs);
-    // Proves the PM1 actually gated the Grove rail; without this the unit's
-    // STM32 never resets and no power-cycle recovery can ever work.
-    Serial.printf("[controller] Grove 5V off=%d restored=%d\n",
-                  static_cast<int>(railOff), static_cast<int>(railRestored));
-
-    if (sda >= 0)
-    {
-      pinMode(sda, INPUT);
-    }
-    if (scl >= 0)
-    {
-      pinMode(scl, INPUT);
-    }
-    M5.Ex_I2C.begin();
-  }
-
-  bool ControllerFeatures::resetI2CBus()
-  {
-    // Release the I2C controller so the pins become GPIO inputs with pull-ups.
-    M5.Ex_I2C.release();
-    // Reinitialise the I2C peripheral; this clears the controller's internal
-    // state machine and FIFO buffers.
-    M5.Ex_I2C.begin();
-    // Give the STM32 joystick firmware a moment to process the bus reset.
-    // Its stop-timeout latch is cleared on every STOP condition, so reopening
-    // the port forces a known idle state.
-    delay(5);
-    // Generate a STOP condition by driving SCL low then high while SDA is
-    // high. This is handled by the I2C begin() call above, but we add an
-    // extra small delay to ensure the slave has time to release SDA.
-    delayMicroseconds(100);
-    return true;
-  }
-
-  uint8_t ControllerFeatures::findJoystickAddress()
-  {
-    // The unit keeps its I2C address in flash, so a disturbed write to its
-    // 0xFF register can move it away from 0x63. Identify it by the firmware
-    // version and the address it reports about itself.
-    for (uint8_t address = 0x08; address < 0x78; ++address)
-    {
-      if (address == kJoystickAddress ||
-          !M5.Ex_I2C.scanID(address, kI2cFrequency))
-      {
-        continue;
-      }
-      uint8_t version = 0;
-      uint8_t storedAddress = 0;
-      if (!readJoystickRegister(address, kJoystickFirmwareVersionRegister,
-                                &version, 1) ||
-          !readJoystickRegister(address, kJoystickAddressRegister,
-                                &storedAddress, 1))
-      {
-        continue;
-      }
-      Serial.printf(
-          "[controller] device at 0x%02X reports fw=%u address=0x%02X\n",
-          static_cast<unsigned>(address), static_cast<unsigned>(version),
-          static_cast<unsigned>(storedAddress));
-      if (storedAddress == address && version >= 1 && version <= 0x0F)
-      {
-        return address;
-      }
-    }
-    return 0;
-  }
-
-  bool ControllerFeatures::recoverJoystick()
-  {
-    // First step: reset the I2C controller and clock the bus free. M5GFX's
-    // init() drives nine SCL pulses and a STOP before reopening the port, which
-    // releases a slave that is stuck holding the bus.
-    if (!resetI2CBus())
-    {
-      Serial.println("[controller] Failed to reset I2C bus");
-    }
-    if (joystickResponds())
-    {
-      Serial.println("[controller] Joystick2 recovered after bus reset");
-      return true;
-    }
-
-    // Second step: the unit may have lost its programmed address.
-    const uint8_t found = findJoystickAddress();
-    if (found != 0)
-    {
-      const uint8_t target = kJoystickAddress;
-      if (M5.Ex_I2C.writeRegister(found, kJoystickAddressRegister, &target, 1,
-                                  kI2cFrequency))
-      {
-        // The unit writes the new address to flash and re-opens its slave.
-        delay(kJoystickAddressRestoreMs);
-        M5.Ex_I2C.release();
-        M5.Ex_I2C.begin();
-        if (joystickResponds())
-        {
-          Serial.printf(
-              "[controller] Joystick2 address 0x%02X restored to 0x%02X\n",
-              static_cast<unsigned>(found),
-              static_cast<unsigned>(kJoystickAddress));
-          return true;
-        }
-      }
-    }
-
-    // Third step: reboot the unit through its own firmware. This clears any
-    // latched I2C error state without touching the Grove rail.
-    if (rebootJoystick())
-    {
-      Serial.println("[controller] Joystick2 recovered after unit reboot");
-      return true;
-    }
-
-    // Fourth step: a real power cycle of the switchable Grove 5V rail.
-    Serial.println("[controller] Joystick2 power cycling Grove 5V");
-    powerCycleJoystickRail();
-    for (uint8_t attempt = 0; attempt < kJoystickRecoveryProbeAttempts;
-         ++attempt)
-    {
-      if (joystickResponds())
-      {
-        Serial.println("[controller] Joystick2 recovered after power cycle");
-        return true;
-      }
-      delay(kJoystickProbeDelayMs);
-    }
-
-    Serial.println("[controller] Joystick2 recovery failed; will retry later");
-    return false;
-  }
-
-  bool ControllerFeatures::saveOrientationSettings()
+bool ControllerFeatures::saveOrientationSettings()
   {
     Preferences preferences;
     if (!preferences.begin("blehid", false))
@@ -1192,40 +984,12 @@ namespace controller
         _modePickerIgnoreButtonRelease = false;
         _haveMouseReport = true;
       }
-      if (_joystickErrorCount == 1)
-      {
-        Serial.println("[controller] Joystick2 I2C read failed");
-      }
-      if (_joystickErrorCount >= kJoystickRecoveryThreshold &&
-          now - _lastJoystickRecoveryAt >=
-              kJoystickRecoveryIntervalMs + _joystickRecoveryBackoffMs)
-      {
-        _lastJoystickRecoveryAt = now;
-        if (recoverJoystick())
-        {
-          _joystickError = false;
-          _joystickErrorCount = 0;
-          _joystickRecoveryBackoffMs = 0;
-          // A reboot or Grove power cycle resets the unit's LED; force the
-          // next successful poll to write the current color again.
-          _joystickRgbColor = 0xFFFFFFFF;
-          _lastJoystickRgbAt = 0;
-        }
-        else
-        {
-          _joystickRecoveryBackoffMs =
-              _joystickRecoveryBackoffMs == 0
-                  ? kJoystickRecoveryIntervalMs
-                  : std::min(_joystickRecoveryBackoffMs * 2,
-                             kJoystickRecoveryMaxBackoffMs);
-        }
-      }
+      if (_joystickErrorCount == 1) { Serial.println("[controller] Joystick2 I2C read failed"); }
       return;
     }
 
     _joystickError = false;
     _joystickErrorCount = 0;
-    _joystickRecoveryBackoffMs = 0;
     updateJoystickRgb(joystick.x, joystick.y, now);
     if (std::abs(joystick.x) >= kIdleMovementThreshold ||
         std::abs(joystick.y) >= kIdleMovementThreshold ||
@@ -1575,7 +1339,7 @@ namespace controller
 
   void ControllerFeatures::enterDeepSleep()
   {
-    Serial.println("[controller] entering deep sleep after idle timeout");
+    Serial.println("[controller] entering deep sleep after idle timeout (IMU + button wake)");
     _lastValidInputAt = millis();
 
     // Give the HID state a moment to settle, then power down the display.
@@ -1583,20 +1347,151 @@ namespace controller
     M5.Display.waitDisplay();
     M5.Speaker.end();
 
+    // Configure BMI270 for any-motion interrupt on INT1 (active low, push-pull)
+    // Use Wire1 (internal I2C bus on StickS3: SDA=47, SCL=48)
+    // Ensure Wire1 is initialized (M5.Unified uses it for IMU)
+    Wire1.begin(47, 48, 100000);
+    delay(10);
+
+    BMI270 imu;
+    int8_t imuInitResult = imu.beginI2C(BMI2_I2C_PRIM_ADDR, Wire1);
+    Serial.printf("[controller] BMI270 beginI2C result: %d (BMI2_OK=%d)\n", imuInitResult, BMI2_OK);
+    if (imuInitResult == BMI2_OK)
+    {
+      // Configure accelerometer for any-motion detection during deep sleep:
+      // - ODR: 200Hz (required for any-motion feature)
+      // - Low power mode (filter_perf=0) for minimal current during sleep
+      // - 2g range (default)
+      bmi2_sens_config accelConfig = {};
+      accelConfig.type = BMI2_ACCEL;
+      accelConfig.cfg.acc.odr = BMI2_ACC_ODR_200HZ;    // 200Hz ODR
+      accelConfig.cfg.acc.bwp = BMI2_ACC_NORMAL_AVG4;  // Bandwidth (normal avg 4)
+      accelConfig.cfg.acc.filter_perf = 0;             // 0 = Low power mode, 1 = Normal mode
+      accelConfig.cfg.acc.range = 0;                   // 0 = 2g range
+
+      if (imu.setConfig(accelConfig) == BMI2_OK)
+      {
+        Serial.println("[controller] BMI270 accel configured: 200Hz ODR, low-power mode");
+      }
+      else
+      {
+        Serial.println("[controller] Failed to configure BMI270 accelerometer");
+      }
+
+      // Configure any-motion sensitivity for wake-on-motion
+      // threshold: 0-2047 (11-bit), lower = more sensitive, ~0.49mg/LSB at 2g range
+      // duration: 0-8191 (13-bit), number of consecutive samples over threshold to trigger
+      bmi2_sens_config anyMotionConfig = {};
+      anyMotionConfig.type = BMI2_ANY_MOTION;
+      anyMotionConfig.cfg.any_motion.threshold = 30;   // ~15mg (very sensitive)
+      anyMotionConfig.cfg.any_motion.duration = 1;     // 1 sample = ~5ms at 200Hz ODR
+      anyMotionConfig.cfg.any_motion.select_x = 1;     // Enable X axis
+      anyMotionConfig.cfg.any_motion.select_y = 1;     // Enable Y axis
+      anyMotionConfig.cfg.any_motion.select_z = 1;     // Enable Z axis
+
+      if (imu.setConfig(anyMotionConfig) == BMI2_OK)
+      {
+        Serial.println("[controller] BMI270 any-motion config: threshold=30 (~15mg), duration=1");
+      }
+      else
+      {
+        Serial.println("[controller] Failed to set BMI270 any-motion config");
+      }
+
+      // Enable any-motion feature
+      if (imu.enableFeature(BMI2_ANY_MOTION) == BMI2_OK)
+      {
+        // Configure interrupt pin: INT1, non-latched, active low, push-pull, output enabled
+        bmi2_int_pin_config intPinConfig = {};
+        intPinConfig.pin_type = BMI2_INT1;
+        intPinConfig.int_latch = BMI2_INT_NON_LATCH;
+        intPinConfig.pin_cfg[0].lvl = BMI2_INT_ACTIVE_LOW;
+        intPinConfig.pin_cfg[0].od = BMI2_INT_PUSH_PULL;
+        intPinConfig.pin_cfg[0].output_en = BMI2_INT_OUTPUT_ENABLE;
+        intPinConfig.pin_cfg[0].input_en = BMI2_INT_INPUT_DISABLE;
+
+        if (imu.setInterruptPinConfig(intPinConfig) == BMI2_OK &&
+            imu.mapInterruptToPin(BMI2_ANY_MOTION_INT, BMI2_INT1) == BMI2_OK)
+        {
+          Serial.println("[controller] BMI270 any-motion interrupt configured on INT1 (active low)");
+        }
+        else
+        {
+          Serial.println("[controller] Failed to configure BMI270 interrupt pin mapping");
+        }
+      }
+      else
+      {
+        Serial.println("[controller] Failed to enable BMI270 any-motion feature");
+      }
+    }
+    else
+    {
+      Serial.println("[controller] BMI270 not found on internal I2C, skipping IMU wake config");
+    }
+
+    // Configure M5PM1 for IMU wakeup chain:
+    // IMU INT1 -> PMIC GPIO4 (PYG4) -> PMIC GPIO3 (PYG1_IRQ) -> ESP32 GPIO 13
+    M5PM1 pm1;
+    if (pm1.begin(&M5.In_I2C, M5PM1_DEFAULT_ADDR, M5PM1_I2C_FREQ_100K) == M5PM1_OK)
+    {
+      // Clear any pending IRQ status
+      pm1.irqClearGpioAll();
+      pm1.irqClearSysAll();
+      pm1.irqClearBtnAll();
+
+      // Enable L1 power (IMU) and hold it during PMIC sleep
+      pm1.setLdoEnable(true);
+      pm1.ldoSetPowerHold(true);
+      pm1.setLedEnLevel(true);
+
+      // Configure PMIC GPIO4 (connected to BMI270 INT1) as IRQ input with pull-up
+      // BMI270 INT1 is active low (falls on motion), so we need pull-up on PMIC side
+      // and IRQ function to detect falling edge and trigger IRQ output on GPIO3
+      pm1.gpioSetMode(M5PM1_GPIO_NUM_4, M5PM1_GPIO_MODE_INPUT);
+      pm1.gpioSetPull(M5PM1_GPIO_NUM_4, M5PM1_GPIO_PULL_UP);
+      pm1.gpioSetFunc(M5PM1_GPIO_NUM_4, M5PM1_GPIO_FUNC_IRQ);
+
+      // Configure PMIC GPIO3 as IRQ output (push-pull)
+      // This connects to ESP32 GPIO 13 (active low wake)
+      pm1.gpioSetMode(M5PM1_GPIO_NUM_3, M5PM1_GPIO_MODE_OUTPUT);
+      pm1.gpioSetDrive(M5PM1_GPIO_NUM_3, M5PM1_GPIO_DRIVE_PUSHPULL);
+      pm1.gpioSetPull(M5PM1_GPIO_NUM_3, M5PM1_GPIO_PULL_UP);
+      pm1.gpioSetFunc(M5PM1_GPIO_NUM_3, M5PM1_GPIO_FUNC_IRQ);
+
+      // Enable IRQ on GPIO4 (IMU interrupt input) - M5PM1_IRQ_MASK_DISABLE = 0 enables interrupt
+      pm1.irqSetGpioMask(M5PM1_IRQ_GPIO4, M5PM1_IRQ_MASK_DISABLE);
+
+      // Enable all GPIO and button IRQ masks (0 = enable, 1 = mask/disable)
+      pm1.irqSetGpioMaskAll(M5PM1_IRQ_MASK_DISABLE);
+      pm1.irqSetBtnMaskAll(M5PM1_IRQ_MASK_DISABLE);
+
+      Serial.println("[controller] M5PM1 configured for IMU wakeup (L1 hold, GPIO4->GPIO3 IRQ chain)");
+    }
+    else
+    {
+      Serial.println("[controller] M5PM1 init failed, falling back to button-only wake");
+    }
+
     // Buttons are on GPIO 11 / 12 on the StickS3 and are active low.
-    constexpr uint64_t kButtonWakeMask =
-        (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_12);
+    // PMIC IRQ is on GPIO 13 (active low when IMU triggers).
+    constexpr uint64_t kWakeMask =
+        (1ULL << GPIO_NUM_11) | (1ULL << GPIO_NUM_12) | (1ULL << GPIO_NUM_13);
 #if defined(ESP_IDF_VERSION_VAL) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
-    esp_sleep_enable_ext1_wakeup_io(kButtonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_sleep_enable_ext1_wakeup_io(kWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
 #else
-    esp_sleep_enable_ext1_wakeup(kButtonWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_sleep_enable_ext1_wakeup(kWakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
 #endif
 
-    // Allow the joystick to be re-polled periodically after wake, but the device
-    // will reboot into the normal idle handling on any wake source.
-    /* NOTE: joystick movement itself cannot wake the ESP32 from deep sleep
-       because the Joystick2 unit is polled over I2C. The button wake sources
-       above cover the explicit "button pressed/clicked" requirement. */
+    // Ensure RTC GPIO pull-ups are enabled for wake pins
+    rtc_gpio_pullup_en(GPIO_NUM_11);
+    rtc_gpio_pullup_en(GPIO_NUM_12);
+    rtc_gpio_pullup_en(GPIO_NUM_13);
+    rtc_gpio_pulldown_dis(GPIO_NUM_11);
+    rtc_gpio_pulldown_dis(GPIO_NUM_12);
+    rtc_gpio_pulldown_dis(GPIO_NUM_13);
+
+    Serial.println("[controller] deep sleep armed: buttons (GPIO11/12) + IMU (GPIO13 via PMIC)");
     esp_deep_sleep_start();
   }
 } // namespace controller

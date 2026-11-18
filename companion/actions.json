@@ -80,7 +80,7 @@
       ],
       "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
       "description": "Build and upload firmware over authenticated Wi-Fi OTA, then restart companion from source",
-      "interactive": false
+      "interactive": true
     },
     "ota filesystem": {
       "command": [
@@ -94,7 +94,7 @@
       ],
       "cwd": "C:\\Projects\\PlatformIO\\Projects\\StickS3-Intercom",
       "description": "Build and upload filesystem over authenticated Wi-Fi OTA, then restart companion from source",
-      "interactive": false
+      "interactive": true
     },
     "magnifier": {
       "command": ["magnify.exe"],

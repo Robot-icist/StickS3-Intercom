@@ -323,10 +323,30 @@ class VoiceCommandRouter:
         copilot_cwd: Optional[Path],
         actions_path: Path,
         timeout: float = 300,
+        opencode_server: Optional[str] = None,
+        opencode_password: Optional[str] = None,
     ) -> None:
         self.opencode_command = opencode_command
         self.opencode_session = opencode_session
         self.opencode_cwd = opencode_cwd
+        # Prefer an explicit server, then environment variables, so the
+        # companion can reuse an already-running `opencode serve` instance
+        # instead of trying to bind its own port.
+        if not opencode_server:
+            opencode_server = (
+                os.environ.get("OPENCODE_SERVER_URL")
+                or os.environ.get("OPENCODE_API_URL")
+            )
+        if not opencode_password:
+            opencode_password = (
+                os.environ.get("OPENCODE_SERVER_PASSWORD")
+                or os.environ.get("OPENCODE_PASSWORD")
+            )
+        self.opencode_server = (opencode_server or "").rstrip("/") or None
+        self.opencode_password = opencode_password or None
+        if self.opencode_password:
+            os.environ["OPENCODE_PASSWORD"] = self.opencode_password
+            os.environ["OPENCODE_SERVER_PASSWORD"] = self.opencode_password
         self.claude_command = claude_command
         self.claude_session = claude_session
         self.claude_cwd = claude_cwd
@@ -593,20 +613,101 @@ class VoiceCommandRouter:
             )
         return executable
 
+    def _opencode_server_args(self) -> list[str]:
+        if not self.opencode_server:
+            return []
+        return ["--server", self.opencode_server]
+
+    def _opencode_env(self) -> Optional[dict[str, str]]:
+        if not self.opencode_password:
+            return None
+        environment = os.environ.copy()
+        environment["OPENCODE_PASSWORD"] = self.opencode_password
+        environment["OPENCODE_SERVER_PASSWORD"] = self.opencode_password
+        return environment
+
+    @staticmethod
+    def parse_opencode_server_output(
+        output: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Extract ``(server_url, password)`` from serve/launcher output."""
+        if not output:
+            return None, None
+        host = "127.0.0.1"
+        port: Optional[str] = None
+        password: Optional[str] = None
+        host_match = re.search(
+            r"server listening on http://([\d.]+):(\d+)", output, re.IGNORECASE
+        )
+        if host_match:
+            host, port = host_match.groups()
+        else:
+            port_match = re.search(r"port[:\s]+(\d{2,5})", output, re.IGNORECASE)
+            if port_match:
+                port = port_match.group(1)
+        password_match = re.search(
+            r"server password\s+(\S+)", output, re.IGNORECASE
+        )
+        if password_match:
+            password = password_match.group(1).strip()
+        url = f"http://{host}:{port}" if port else None
+        return url, password
+
+    @staticmethod
+    def _extract_opencode_session_id(output: Optional[str]) -> Optional[str]:
+        """Extract a session ID from JSON or JSONL `opencode run` output."""
+        if not output:
+            return None
+        if isinstance(output, (bytes, bytearray)):
+            try:
+                output = output.decode("utf-8", errors="replace")
+            except Exception:
+                return None
+        keys = ("sessionID", "sessionId", "session_id", "id")
+        for candidate in [output, *output.splitlines()]:
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            try:
+                data = json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            objects = data if isinstance(data, list) else [data]
+            for item in objects:
+                if isinstance(item, dict):
+                    for key in keys:
+                        value = item.get(key)
+                        if isinstance(value, str) and value:
+                            return value
+        for pattern in (
+            r'"sessionID"\s*:\s*"([^"]+)"',
+            r'"sessionId"\s*:\s*"([^"]+)"',
+            r'"session_id"\s*:\s*"([^"]+)"',
+            r'"id"\s*:\s*"(ses_[^"]+)"',
+        ):
+            match = re.search(pattern, output)
+            if match:
+                return match.group(1)
+        return None
+
     def _list_opencode_models(self) -> list[str]:
         """List all available OpenCode models."""
         executable = self._opencode_cli()
         try:
-            result = subprocess.run(
-                [executable, "models"],
-                cwd=self.opencode_cwd or Path.cwd(),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                check=False,
-            )
+            command = [executable, "models", *self._opencode_server_args()]
+            run_kwargs: dict[str, object] = {
+                "cwd": self.opencode_cwd or Path.cwd(),
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": 30,
+                "check": False,
+            }
+            env = self._opencode_env()
+            if env is not None:
+                run_kwargs["env"] = env
+            result = subprocess.run(command, **run_kwargs)
         except (OSError, subprocess.TimeoutExpired) as error:
             print(f"Could not list OpenCode models: {error}", file=sys.stderr)
             return []
@@ -616,20 +717,35 @@ class VoiceCommandRouter:
         models = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         return models
 
+    def _list_opencode_sessions(self, timeout: int = 30):
+        """List sessions, reusing the configured server and password."""
+        executable = self._opencode_cli()
+        command = [
+            executable,
+            "session",
+            "list",
+            "--format",
+            "json",
+            *self._opencode_server_args(),
+        ]
+        run_kwargs: dict[str, object] = {
+            "cwd": self.opencode_cwd or Path.cwd(),
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "timeout": timeout,
+            "check": False,
+        }
+        env = self._opencode_env()
+        if env is not None:
+            run_kwargs["env"] = env
+        return subprocess.run(command, **run_kwargs)
+
     def _get_last_opencode_model(self) -> Optional[str]:
         """Get the model used in the most recent OpenCode session."""
-        executable = self._opencode_cli()
         try:
-            result = subprocess.run(
-                [executable, "session", "list", "--format", "json"],
-                cwd=self.opencode_cwd or Path.cwd(),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                check=False,
-            )
+            result = self._list_opencode_sessions()
         except (OSError, subprocess.TimeoutExpired):
             return None
         if result.returncode != 0:
@@ -656,18 +772,8 @@ class VoiceCommandRouter:
         if self.opencode_session:
             return self.opencode_session
 
-        executable = self._opencode_cli()
         try:
-            result = subprocess.run(
-                [executable, "session", "list", "--format", "json"],
-                cwd=self.opencode_cwd or Path.cwd(),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-                check=False,
-            )
+            result = self._list_opencode_sessions()
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeError(f"Could not list OpenCode sessions: {error}") from error
         if result.returncode != 0:
@@ -772,14 +878,20 @@ class VoiceCommandRouter:
                 command = [
                     self._opencode_cli(),
                     "run",
+                    "--format",
+                    "json",
                     "--model",
                     model,
+                    *self._opencode_server_args(),
                     prompt,
                 ]
             else:
                 command = [
                     self._opencode_cli(),
                     "run",
+                    "--format",
+                    "json",
+                    *self._opencode_server_args(),
                     prompt,
                 ]
         else:
@@ -789,6 +901,7 @@ class VoiceCommandRouter:
             command = [
                 self._opencode_cli(),
                 "run",
+                *self._opencode_server_args(),
                 "--session",
                 session_id,
                 prompt,
@@ -798,6 +911,9 @@ class VoiceCommandRouter:
             options = _agent_cli_options(interactive=is_new_session)
             if not is_new_session:
                 options["stderr"] = subprocess.PIPE
+            env = self._opencode_env()
+            if env is not None:
+                options["env"] = env
             result = subprocess.run(
                 command,
                 cwd=self.opencode_cwd or Path.cwd(),
@@ -817,17 +933,16 @@ class VoiceCommandRouter:
             raise RuntimeError(
                 f"OpenCode CLI failed with exit code {result.returncode}{suffix}"
             )
-        # If we created a new session and captured stdout, get the session ID
-        if is_new_session and result.stdout:
-            try:
-                output_data = json.loads(result.stdout.strip())
-                if isinstance(output_data, dict) and isinstance(output_data.get("id"), str):
-                    self.opencode_session = output_data["id"]
-                    directory = output_data.get("directory")
-                    if isinstance(directory, str) and directory:
-                        self.opencode_cwd = Path(directory)
-            except (json.JSONDecodeError, AttributeError):
-                pass
+        # Capture the new session ID from JSON/JSONL output. If OpenCode did
+        # not print it, fall back to listing sessions.
+        if is_new_session:
+            new_session_id = self._extract_opencode_session_id(result.stdout)
+            if new_session_id:
+                self.opencode_session = new_session_id
+            else:
+                fallback_id = self._get_most_recent_opencode_session()
+                if fallback_id:
+                    self.opencode_session = fallback_id
 
     def _send_to_opencode_auto(self, prompt: str) -> None:
         """Send to OpenCode using the last known session (no prompt, no picker).
@@ -852,6 +967,9 @@ class VoiceCommandRouter:
             command = [
                 self._opencode_cli(),
                 "run",
+                "--format",
+                "json",
+                *self._opencode_server_args(),
                 prompt,
             ]
         else:
@@ -859,6 +977,7 @@ class VoiceCommandRouter:
             command = [
                 self._opencode_cli(),
                 "run",
+                *self._opencode_server_args(),
                 "--session",
                 session_id,
                 prompt,
@@ -868,6 +987,9 @@ class VoiceCommandRouter:
             options = _agent_cli_options(interactive=is_new_session)
             if not is_new_session:
                 options["stderr"] = subprocess.PIPE
+            env = self._opencode_env()
+            if env is not None:
+                options["env"] = env
             result = subprocess.run(
                 command,
                 cwd=self.opencode_cwd or Path.cwd(),
@@ -887,33 +1009,21 @@ class VoiceCommandRouter:
             raise RuntimeError(
                 f"OpenCode CLI failed with exit code {result.returncode}{suffix}"
             )
-        # If we created a new session, capture its ID for future use
-        if is_new_session and result.stdout:
-            try:
-                # opencode run outputs the session ID when creating a new session
-                output_data = json.loads(result.stdout.strip())
-                if isinstance(output_data, dict) and isinstance(output_data.get("id"), str):
-                    self.opencode_session = output_data["id"]
-                    directory = output_data.get("directory")
-                    if isinstance(directory, str) and directory:
-                        self.opencode_cwd = Path(directory)
-            except (json.JSONDecodeError, AttributeError):
-                pass
+        # Capture the new session ID from JSON/JSONL output. If OpenCode did
+        # not print it, fall back to listing sessions.
+        if is_new_session:
+            new_session_id = self._extract_opencode_session_id(result.stdout)
+            if new_session_id:
+                self.opencode_session = new_session_id
+            else:
+                fallback_id = self._get_most_recent_opencode_session()
+                if fallback_id:
+                    self.opencode_session = fallback_id
 
     def _get_most_recent_opencode_session(self) -> Optional[str]:
         """Get the most recent OpenCode session ID without prompting."""
-        executable = self._opencode_cli()
         try:
-            result = subprocess.run(
-                [executable, "session", "list", "--format", "json"],
-                cwd=self.opencode_cwd or Path.cwd(),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                check=False,
-            )
+            result = self._list_opencode_sessions(timeout=10)
         except (OSError, subprocess.TimeoutExpired) as error:
             print(f"Could not list OpenCode sessions: {error}", file=sys.stderr)
             return None

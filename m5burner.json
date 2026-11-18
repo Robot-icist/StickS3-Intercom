@@ -1,0 +1,29 @@
+{
+    "name": "StickS3 Intercom + BLE HID",
+    "description": "Intercom firmware for M5Stack StickS3 using ESP-NOW and/or Wi-Fi. Supports mixed networks of multiple StickS3 and AtomS3R units, browser peers over HTTPS, peer selection, spy mode, live/clip audio, plus a standalone BLE keyboard/mouse controller with web UI. Wi-Fi and ESP-NOW-only units can communicate together.",
+    "keywords": "ESP32-S3, M5Stack, StickS3, Intercom, BLE HID, ESP-NOW, LittleFS",
+    "author": "Robot-icist",
+    "repository": "https://github.com/Robot-icist/StickS3-Intercom",
+    "firmware_category": [
+        {
+            "StickS3 BLE HID": {
+                "path": "firmware_sticks3_ble_hid",
+                "device": [
+                    "M5Stack StickS3"
+                ],
+                "default_baud": 1500000
+            }
+        },
+        {
+            "StickS3 Intercom": {
+                "path": "firmware_sticks3_intercom",
+                "device": [
+                    "M5Stack StickS3"
+                ],
+                "default_baud": 1500000
+            }
+        }
+    ],
+    "version": "1.0.0",
+    "framework": "Arduino"
+}

@@ -1005,6 +1005,28 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--opencode-server",
+        default=(
+            os.environ.get("OPENCODE_SERVER_URL")
+            or os.environ.get("OPENCODE_API_URL")
+        ),
+        help=(
+            "OpenCode server URL to reuse "
+            "(default: OPENCODE_SERVER_URL or OPENCODE_API_URL)"
+        ),
+    )
+    parser.add_argument(
+        "--opencode-password",
+        default=(
+            os.environ.get("OPENCODE_SERVER_PASSWORD")
+            or os.environ.get("OPENCODE_PASSWORD")
+        ),
+        help=(
+            "OpenCode server password "
+            "(default: OPENCODE_SERVER_PASSWORD or OPENCODE_PASSWORD)"
+        ),
+    )
+    parser.add_argument(
         "--claude-command",
         default=os.environ.get("CLAUDE_CODE_COMMAND", "claude"),
         help="Claude Code CLI command (default: CLAUDE_CODE_COMMAND or claude)",
@@ -1055,6 +1077,8 @@ def main() -> None:
                 opencode_command=args.opencode_command,
                 opencode_session=args.opencode_session,
                 opencode_cwd=args.opencode_cwd,
+                opencode_server=args.opencode_server,
+                opencode_password=args.opencode_password,
                 claude_command=args.claude_command,
                 claude_session=args.claude_session,
                 claude_cwd=args.claude_cwd,

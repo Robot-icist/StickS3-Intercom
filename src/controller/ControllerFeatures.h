@@ -194,10 +194,8 @@ namespace controller
     uint32_t _lastImuAt = 0;
     uint32_t _lastBatteryAt = 0;
     uint32_t _lastJoystickLogAt = 0;
-    uint32_t _lastJoystickRecoveryAt = 0;
     uint32_t _lastJoystickRgbAt = 0;
     uint32_t _joystickRgbColor = 0;
-    uint32_t _joystickRecoveryBackoffMs = 0;
     uint32_t _lastGestureAt = 0;
     uint32_t _lastValidInputAt = 0;
     uint32_t _sleepTimeoutMs = 60000;

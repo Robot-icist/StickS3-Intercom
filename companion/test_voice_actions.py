@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -55,6 +56,31 @@ class ParseIntentTests(unittest.TestCase):
 
 
 class VoiceCommandRouterTests(unittest.TestCase):
+    _ISOLATED_ENV_KEYS = (
+        "STICKS3_INTERACTION_DIR",
+        "OPENCODE_SERVER_URL",
+        "OPENCODE_API_URL",
+        "OPENCODE_SERVER_PASSWORD",
+        "OPENCODE_PASSWORD",
+        "OPENCODE_SESSION_ID",
+    )
+
+    def setUp(self) -> None:
+        # Voice actions are launched from the companion, which sets these
+        # variables in its own environment. Remove them so a running companion
+        # cannot change which confirmation path or CLI options tests exercise.
+        self._saved_env = {
+            key: os.environ.pop(key)
+            for key in self._ISOLATED_ENV_KEYS
+            if key in os.environ
+        }
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self) -> None:
+        for key in self._ISOLATED_ENV_KEYS:
+            os.environ.pop(key, None)
+        os.environ.update(self._saved_env)
+
     def make_router(self, config: Path) -> VoiceCommandRouter:
         return VoiceCommandRouter(
             opencode_command="opencode",
@@ -458,7 +484,8 @@ class VoiceCommandRouterTests(unittest.TestCase):
             )
             self.assertEqual(run.call_args_list[0].kwargs["cwd"], project)
             self.assertEqual(run.call_args_list[1].kwargs["cwd"], Path(temporary))
-            # Existing session: STICKS3_INTERACTION_DIR is set in test env, so non-interactive options
+            # Existing session: only stderr is captured when no interaction
+            # directory is configured.
             self.assertEqual(run.call_args_list[1].kwargs, {
                 "cwd": Path(temporary),
                 "timeout": 300,
@@ -530,6 +557,8 @@ class VoiceCommandRouterTests(unittest.TestCase):
             self.assertEqual(run.call_args_list[2].args[0], [
                 "opencode.cmd",
                 "run",
+                "--format",
+                "json",
                 "--model",
                 "opencode/claude-sonnet-5-5",
                 "summarize this project",
@@ -653,6 +682,8 @@ class VoiceCommandRouterTests(unittest.TestCase):
             self.assertEqual(run.call_args_list[1].args[0], [
                 "opencode.cmd",
                 "run",
+                "--format",
+                "json",
                 "fix the bug",
             ])
             # New session should be stored
@@ -900,6 +931,90 @@ class VoiceCommandRouterTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "string-array"):
                 load_actions(config)
+
+    def test_opencode_server_can_come_from_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.dict(
+                os.environ,
+                {
+                    "OPENCODE_SERVER_URL": "http://localhost:4096/",
+                    "OPENCODE_PASSWORD": "server-secret",
+                },
+            ):
+                router = self.make_router(Path(temporary) / "missing.json")
+
+            self.assertEqual(router.opencode_server, "http://localhost:4096")
+            self.assertEqual(router.opencode_password, "server-secret")
+
+    def test_opencode_reuses_running_server_with_password(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            router.opencode_server = "http://127.0.0.1:4096"
+            router.opencode_password = "server-secret"
+            router.opencode_session = "session-1"
+            with (
+                patch("voice_actions.shutil.which", return_value="opencode.cmd"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                ) as run,
+            ):
+                router.handle("do fix the bug")
+
+            self.assertEqual(run.call_args_list[0].args[0], [
+                "opencode.cmd",
+                "run",
+                "--server",
+                "http://127.0.0.1:4096",
+                "--session",
+                "session-1",
+                "fix the bug",
+            ])
+            self.assertEqual(
+                run.call_args_list[0].kwargs["env"]["OPENCODE_PASSWORD"],
+                "server-secret",
+            )
+            self.assertEqual(
+                run.call_args_list[0].kwargs["env"]["OPENCODE_SERVER_PASSWORD"],
+                "server-secret",
+            )
+            self.assertEqual(run.call_args_list[0].kwargs["stderr"], subprocess.PIPE)
+
+    def test_parses_opencode_serve_output(self) -> None:
+        url, password = VoiceCommandRouter.parse_opencode_server_output(
+            "server listening on http://127.0.0.1:4096\n"
+            "server password hunter2\n"
+        )
+        self.assertEqual(url, "http://127.0.0.1:4096")
+        self.assertEqual(password, "hunter2")
+
+    def test_new_opencode_session_id_is_read_from_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            router = self.make_router(Path(temporary) / "missing.json")
+            with (
+                patch("voice_actions.shutil.which", return_value="opencode.cmd"),
+                patch(
+                    "voice_actions.subprocess.run",
+                    side_effect=(
+                        subprocess.CompletedProcess(
+                            [], 0, stdout=json.dumps([]), stderr=""
+                        ),
+                        subprocess.CompletedProcess(
+                            [],
+                            0,
+                            stdout=(
+                                '{"type":"step-start","sessionID":"ses_jsonl"}\n'
+                                '{"type":"step-finish","sessionID":"ses_jsonl"}\n'
+                            ),
+                            stderr="",
+                        ),
+                    ),
+                ) as run,
+            ):
+                router.handle("do fix the bug")
+
+            self.assertEqual(router.opencode_session, "ses_jsonl")
+            self.assertEqual(run.call_count, 2)
 
 
 if __name__ == "__main__":
